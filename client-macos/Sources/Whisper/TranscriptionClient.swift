@@ -13,11 +13,11 @@ struct ServerError: Decodable {
 }
 
 final class TranscriptionClient {
-    private let config: Config
+    private let settings: Settings
     private let session: URLSession
 
-    init(config: Config) {
-        self.config = config
+    init(settings: Settings) {
+        self.settings = settings
         let cfg = URLSessionConfiguration.default
         // Dictation latency ≈ clip length and requests are serialized server-side,
         // so allow headroom over the ≤30 s prototype clip cap.
@@ -26,10 +26,10 @@ final class TranscriptionClient {
     }
 
     func transcribe(audioURL: URL) async throws -> String {
-        let endpoint = config.serverURL.appendingPathComponent("transcribe")
+        let endpoint = settings.serverURL.appendingPathComponent("transcribe")
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.setValue("Bearer \(config.bearerToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
 
         let boundary = "Boundary-\(UUID().uuidString)"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -52,6 +52,22 @@ final class TranscriptionClient {
             throw ClientError.http(status: http.statusCode)
         }
         return try JSONDecoder().decode(TranscriptionResult.self, from: data).text
+    }
+
+    /// Lightweight reachability/auth probe for the Settings "Test" button.
+    func health() async -> String {
+        let endpoint = settings.serverURL.appendingPathComponent("healthz")
+        var req = URLRequest(url: endpoint)
+        req.timeoutInterval = 6
+        req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let body = String(data: data, encoding: .utf8) ?? ""
+            return code == 200 ? "OK — \(body)" : "HTTP \(code)"
+        } catch {
+            return "unreachable: \(error.localizedDescription)"
+        }
     }
 
     enum ClientError: Error {

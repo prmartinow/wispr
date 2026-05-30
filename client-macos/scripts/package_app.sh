@@ -38,5 +38,7 @@ PLIST
 codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "warn: codesign skipped"
 
 echo "Built $APP"
-echo "Run:  WHISPER_SERVER_URL=http://wispr.local:8080 WHISPER_TOKEN=<secret> open ./$APP"
-echo "Logs: ./$APP/Contents/MacOS/Whisper   (runs in foreground, prints NSLog output)"
+echo "Run:   open ./$APP   (server defaults to :8090; set URL/token in Settings, or seed once"
+echo "       with WHISPER_SERVER_URL / WHISPER_TOKEN env on first launch — token goes to Keychain)"
+echo "Logs:  ./$APP/Contents/MacOS/Whisper   (foreground, prints NSLog output)"
+echo "Grant Microphone + Accessibility when prompted (Accessibility = global hotkey + paste)."

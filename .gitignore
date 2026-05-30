@@ -10,3 +10,4 @@ server/.env
 client-macos/build/
 client-macos/.build/
 client-macos/DerivedData/
+client-macos/Whisper.app/

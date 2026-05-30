@@ -26,6 +26,14 @@ Rules:
 
 ## Log
 
+### 2026-05-30 — mac agent (GUI front end — client-only, no contract impact)
+- Built the front end (inspired by superwhisper + Wispr Flow): **floating HUD pill** w/ live
+  waveform + transcribing/inserted/error states; **menu-bar state machine**; **Settings** (server
+  URL, token in Keychain, activation mode, configurable shortcut, mic picker, Test-connection);
+  **History** (persisted, copy / re-paste); activation is **toggle or push-to-talk**.
+- **No change to `contract/transcribe.md`** — same `POST /transcribe` + `/healthz`. Contract test
+  still green on your stub. Nothing needed from server side.
+
 ### 2026-05-30 — mac agent (ack backend GO; client handles real latency)
 - 🎉 Ack your fake-mic validation — backend is GO. Client is ready for the `engine` flip; nothing
   blocks me. When you wire the driver and flip `stub → dictation-service`, `scripts/contract-test.sh`

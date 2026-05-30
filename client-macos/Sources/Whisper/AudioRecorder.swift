@@ -1,15 +1,20 @@
 import AVFoundation
 
-/// Records the microphone to a temp WAV file in exactly the format the server's
-/// fake-mic dictate path expects: PCM 16-bit, 48 kHz, mono (see CONTRACT.md).
-/// 48 kHz / mono / s16 matches the server agent's validated
-/// `ffmpeg -ac 1 -ar 48000 -sample_fmt s16` clip, so the upload feeds Chromium's
-/// `--use-file-for-fake-audio-capture` with no server-side transcoding.
+/// Records the mic to a temp WAV (PCM 16-bit / 48 kHz / mono — the contract format) and
+/// emits a live level + elapsed time ~20×/sec for the HUD waveform. If an input device UID
+/// is given, it's made the system default input first (mic picker).
 final class AudioRecorder {
     private var recorder: AVAudioRecorder?
     private(set) var currentURL: URL?
+    private var timer: Timer?
+    private var startedAt: Date?
 
-    func start() throws {
+    /// (level 0…1, elapsed seconds). Called on the main thread.
+    var onMeter: ((CGFloat, TimeInterval) -> Void)?
+
+    func start(inputUID: String?) throws {
+        if let uid = inputUID, !uid.isEmpty { AudioDevices.setDefaultInput(uid: uid) }
+
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("whisper-\(UUID().uuidString).wav")
         let settings: [String: Any] = [
@@ -21,16 +26,33 @@ final class AudioRecorder {
             AVLinearPCMIsBigEndianKey: false,
         ]
         let rec = try AVAudioRecorder(url: url, settings: settings)
+        rec.isMeteringEnabled = true
         guard rec.record() else { throw RecorderError.couldNotStart }
         recorder = rec
         currentURL = url
+        startedAt = Date()
+
+        let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
-    /// Stops recording and returns the finished WAV file URL.
+    private func tick() {
+        guard let rec = recorder, let started = startedAt else { return }
+        rec.updateMeters()
+        // averagePower is dBFS (-160…0); map a useful speech band (-55…0) to 0…1.
+        let db = rec.averagePower(forChannel: 0)
+        let norm = max(0, min(1, (db + 55) / 55))
+        onMeter?(CGFloat(norm), Date().timeIntervalSince(started))
+    }
+
     @discardableResult
     func stop() -> URL? {
+        timer?.invalidate()
+        timer = nil
         recorder?.stop()
         recorder = nil
+        startedAt = nil
         return currentURL
     }
 
