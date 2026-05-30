@@ -1,0 +1,8 @@
+node_modules/
+server/.env
+*.wav
+*.log
+.DS_Store
+client-macos/build/
+client-macos/.build/
+client-macos/DerivedData/
