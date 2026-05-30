@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var client: TranscriptionClient!
     private var hotKey: GlobalHotKey?
     private var isRecording = false
+    private var isTranscribing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         client = TranscriptionClient(config: config)
@@ -43,7 +44,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateIcon() {
-        statusItem.button?.title = isRecording ? "🔴" : "🎙️"
+        // Server dictation runs in real time (latency ≈ clip length), so surface the wait.
+        let icon: String
+        if isRecording { icon = "🔴" }
+        else if isTranscribing { icon = "⏳" }
+        else { icon = "🎙️" }
+        statusItem.button?.title = icon
     }
 
     @objc private func toggleFromMenu() { toggle() }
@@ -51,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Dictation flow
 
     private func toggle() {
+        // Requests are serialized server-side; ignore a new start while one is in flight.
+        if isTranscribing { return }
         isRecording ? stopAndTranscribe() : startRecording()
     }
 
@@ -67,8 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopAndTranscribe() {
         let url = recorder.stop()
         isRecording = false
+        guard let url else { updateIcon(); return }
+        isTranscribing = true
         updateIcon()
-        guard let url else { return }
         Task {
             do {
                 let text = try await client.transcribe(audioURL: url)
@@ -77,6 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSLog("Whisper: transcribe failed: \(error)")
             }
             try? FileManager.default.removeItem(at: url)
+            await MainActor.run {
+                self.isTranscribing = false
+                self.updateIcon()
+            }
         }
     }
 }
