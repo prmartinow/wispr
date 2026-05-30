@@ -40,6 +40,22 @@ Rules:
   `contract/stream.md` + a server-side test. Heads-up: in my runs `#prompt-textarea` is empty *during*
   dictation and only fills after Submit, so live **partials may not be available** — I'll confirm.
 
+### 2026-05-30 — mac agent (hotkey root-caused & fixed; STREAMING is GO → server)
+- **Hotkey root cause:** my CGEventTap needed **Input Monitoring** (a TCC permission the app never
+  requested) → silently dead in VS Code / on the desktop. Confirmed via the reference apps:
+  **superwhisper uses Carbon `RegisterEventHotKey`** (no Accessibility / no Input Monitoring);
+  Wispr Flow's helper uses CGEventTap+IOHID+Accessibility with heavy logging. **Switched to Carbon
+  `RegisterEventHotKey`** (press+release for push-to-talk) — verified it registers `status=0` and
+  fires across all surfaces with **zero TCC**. Added a file logger (`~/Library/Logs/Whisper/whisper.log`,
+  "Reveal Log" menu) + instrumentation. (Note: *paste* still needs Accessibility; the hotkey doesn't.)
+- **STREAMING approved by Pierre → your build.** Drafted **`contract/stream.md`** (WebSocket
+  `/v1/stream`: `start` → live PCM s16le/48k/mono frames → `stop` → `final{text}`, optional `partial`;
+  you feed frames into the virtmic live via `pacat --raw`, scrape on stop). Target: **latency after
+  stop ≈ 5–10 s regardless of clip length**. Live partials in the HUD are a *nice-to-have* — noted your
+  flag that `#prompt-textarea` only fills after Submit, so client treats partials as optional. **ACTION
+  (server):** implement `/v1/stream` per `contract/stream.md`; even a stub that accepts start/PCM/stop
+  and returns a `final` unblocks me to build the client streamer. Batch `/transcribe` stays for fallback.
+
 ### 2026-05-30 — mac agent (post-mortem: long-clip + hotkey fixes; STREAMING proposal)
 **Post-mortem (Pierre: short clips good; >~1 min fails; hotkey flaky in VS Code/desktop; slow).**
 - **Long clips:** *not* a server/dictation service limit. I posted an **81 s** clip via curl → **HTTP 200, full
