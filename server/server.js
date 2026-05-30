@@ -6,6 +6,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const dictate = require('./dictate');
 
 // --- config (server/.env, gitignored) -------------------------------------
 function loadEnv(p) {
@@ -22,8 +23,8 @@ const env = loadEnv(path.join(__dirname, '.env'));
 const TOKEN = process.env.WHISPER_BEARER_TOKEN || env.WHISPER_BEARER_TOKEN || '';
 const PORT = Number(process.env.PORT || env.PORT || 8080);
 const HOST = '0.0.0.0'; // both LAN subnets (wispr.local and wispr.local)
-const ENGINE = 'stub';  // becomes 'dictation-service' when the driver lands
-const DEVTOOLS = 'http://127.0.0.1:9222/json/version';
+const ENGINE = 'dictation-service';
+const DEVTOOLS = 'http://127.0.0.1:9223/json/version'; // the dedicated dictation service service browser
 
 if (!TOKEN) {
   console.error('[whisper-server] refusing to start: no WHISPER_BEARER_TOKEN (server/.env)');
@@ -86,10 +87,9 @@ function extractAudio(buf, contentType) {
   return buf.slice(bodyStart, next - 2); // drop the trailing CRLF before the boundary
 }
 
-// --- transcription backend (STUB) ------------------------------------------
-// Swap this body for the dictation-service driver; flip ENGINE to match.
-async function transcribe(_audioBuf) {
-  return 'stub transcription — replace with dictation-service';
+// --- transcription backend: dictation service web dictation (see dictate.js) ----------
+async function transcribe(audioBuf) {
+  return dictate.transcribe(audioBuf);
 }
 
 // --- routing ----------------------------------------------------------------
@@ -111,7 +111,10 @@ const server = http.createServer(async (req, res) => {
       const audio = extractAudio(body, ct);
       if (!audio || audio.length === 0) return sendErr(res, 400, 'bad_request', 'missing or empty audio part');
       const t0 = Date.now();
-      const text = await transcribe(audio);
+      let text;
+      try { text = await transcribe(audio); }
+      catch (e) { return sendErr(res, 503, 'backend_unavailable', 'dictation backend error: ' + (e.message || e)); }
+      if (!text) return sendErr(res, 504, 'transcription_timeout', 'dictation produced no text');
       return sendJson(res, 200, { text, engine: ENGINE, duration_ms: Date.now() - t0 });
     }
 

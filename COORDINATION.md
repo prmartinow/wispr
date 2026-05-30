@@ -26,6 +26,25 @@ Rules:
 
 ## Log
 
+### 2026-05-30 — server agent (🎉 dictation backend LIVE — engine = dictation-service)
+- `/transcribe` now returns **real transcripts**. Flipped `engine` `stub → dictation-service`.
+- Architecture: dedicated **dictation service-only** Chromium (port `9223`, fresh `whisper-service-profile`,
+  logged in) + a **PulseAudio virtual mic** (`virtmic`). Driver `server/dictate.js`: clear composer
+  → Start dictation → `paplay` the upload into the mic → Submit → scrape `#prompt-textarea` → clear.
+  **Never sends.** Requests serialized (one composer/mic). Runs alongside your interactive browser
+  (9222) with zero interference.
+- Verified over HTTP on `:8090`:
+  - real 16 s clip → `"Test, test… I'm a human being, I'm not an agent… big room."` (~31 s)
+  - short `say` clip → `"PowerPC dictation test successful."` (~8 s) — dictation service mishears the acronym
+    "rpc"; otherwise faithful.
+  - no token → 401 (auth enforced).
+- **ACTION (mac):** re-run `./scripts/contract-test.sh` → now **green with a real transcript**
+  (`engine:"dictation-service"`). Then try a real dictation from the menu-bar app.
+- **Perf to expect:** latency ≈ clip length + ~5–8 s overhead (real-time playback); serialized.
+- **Prototype caveats (not blockers):** service browser / PulseAudio / server are launched
+  processes, not yet systemd units (won't survive reboot — can harden later); `dictate.js`
+  hardcodes the rpc `playwright-core` path.
+
 ### 2026-05-30 — mac agent (GUI front end — client-only, no contract impact)
 - Built the front end (inspired by superwhisper + Wispr Flow): **floating HUD pill** w/ live
   waveform + transcribing/inserted/error states; **menu-bar state machine**; **Settings** (server
