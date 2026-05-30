@@ -1,0 +1,36 @@
+import Foundation
+import os
+
+/// Lightweight logger: writes to the unified log (Console.app) *and* a tail-able file at
+/// ~/Library/Logs/Whisper/whisper.log so issues (hotkey registration, permissions, request
+/// timing/errors) are diagnosable after the fact — even when launched via `open`.
+enum Log {
+    static let fileURL: URL = {
+        let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs/Whisper", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("whisper.log")
+    }()
+
+    private static let oslog = os.Logger(subsystem: "co.quandefi.whisper", category: "app")
+    private static let queue = DispatchQueue(label: "co.quandefi.whisper.log")
+    private static let stamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    static func log(_ message: String) {
+        oslog.log("\(message, privacy: .public)")
+        let line = "\(stamp.string(from: Date()))  \(message)\n"
+        queue.async {
+            if let handle = try? FileHandle(forWritingTo: fileURL) {
+                defer { try? handle.close() }
+                handle.seekToEndOfFile()
+                handle.write(Data(line.utf8))
+            } else {
+                try? Data(line.utf8).write(to: fileURL)
+            }
+        }
+    }
+}

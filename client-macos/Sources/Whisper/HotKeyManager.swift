@@ -1,128 +1,122 @@
 import AppKit
-import CoreGraphics
+import Carbon.HIToolbox
 
-/// Global hotkey via a CGEventTap (not NSEvent monitors, which are best-effort and miss
-/// events in some apps / on the desktop). The tap reliably sees every key event across all
-/// surfaces, gives key-up (needed for push-to-talk), and lets us **consume** the matched
-/// combo so it never reaches the focused app — avoiding shortcut conflicts.
-/// Requires Accessibility permission (already needed for paste).
-///   - toggle:     keyDown on the combo → onToggle(); event consumed
-///   - pushToTalk: keyDown on the combo → onStart(); keyUp of the key → onStop(); consumed
+// Carbon's hotkey handler is a bare C function pointer (no captured context); route to the
+// live instance statically. One global hotkey, so this is fine.
+private let whisperHotKeyHandler: EventHandlerUPP = { (_, eventRef, _) -> OSStatus in
+    guard let eventRef else { return noErr }
+    let kind = GetEventKind(eventRef)
+    DispatchQueue.main.async { HotKeyManager.shared?.handle(kind: kind) }
+    return noErr
+}
+
+/// Global hotkey via Carbon `RegisterEventHotKey` — the same mechanism superwhisper and
+/// Electron's globalShortcut use. Crucially it needs **no Accessibility and no Input
+/// Monitoring** (unlike a CGEventTap), works across every app/surface, and consumes the
+/// combo so it won't clash with the focused app. We register for both Pressed and Released
+/// so push-to-talk (hold) works without an event tap.
+///   - toggle:     Pressed → onToggle()
+///   - pushToTalk: Pressed → onStart(); Released → onStop()
 final class HotKeyManager {
+    static weak var shared: HotKeyManager?
+
     var onToggle: () -> Void = {}
     var onStart: () -> Void = {}
     var onStop: () -> Void = {}
 
-    private var keyCode: Int64
-    private var requiredFlags: CGEventFlags
+    private var keyCode: UInt32
+    private var carbonModifiers: UInt32
     private var mode: ActivationMode
     private var enabled = true
     private var pttActive = false
 
-    private var tap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var hotKeyRef: EventHotKeyRef?
+    private var handlerRef: EventHandlerRef?
 
     init(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, mode: ActivationMode) {
-        self.keyCode = Int64(keyCode)
-        self.requiredFlags = Self.cgFlags(from: modifiers)
+        self.keyCode = UInt32(keyCode)
+        self.carbonModifiers = Self.carbon(modifiers)
         self.mode = mode
     }
 
     func start() {
-        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
-        let callback: CGEventTapCallBack = { _, type, event, refcon in
-            guard let refcon else { return Unmanaged.passUnretained(event) }
-            let manager = Unmanaged<HotKeyManager>.fromOpaque(refcon).takeUnretainedValue()
-            return manager.handle(type: type, event: event)
-        }
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: CGEventMask(mask),
-            callback: callback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque())
-        else {
-            NSLog("Whisper: failed to create event tap (grant Accessibility, then relaunch)")
-            return
-        }
-        self.tap = tap
-        let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        runLoopSource = src
-        CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        HotKeyManager.shared = self
+        installHandler()
+        register()
+        Log.log("HotKey: started mode=\(mode.rawValue) AXTrusted=\(AXIsProcessTrusted()) (hotkey itself needs no TCC)")
     }
 
     func stop() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
-        tap = nil; runLoopSource = nil; pttActive = false
+        unregister()
+        if let h = handlerRef { RemoveEventHandler(h); handlerRef = nil }
     }
 
     func update(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, mode: ActivationMode) {
-        self.keyCode = Int64(keyCode)
-        self.requiredFlags = Self.cgFlags(from: modifiers)
+        self.keyCode = UInt32(keyCode)
+        self.carbonModifiers = Self.carbon(modifiers)
         self.mode = mode
         pttActive = false
+        unregister()
+        if enabled { register() }
+        Log.log("HotKey: reconfigured keyCode=\(keyCode) carbonMods=\(carbonModifiers) mode=\(mode.rawValue)")
     }
 
-    /// Pause/resume — used while the Settings shortcut recorder captures a new combo.
-    func setEnabled(_ on: Bool) { enabled = on; if !on { pttActive = false } }
+    /// Pause/resume — used while the Settings recorder captures a new combo (so the live
+    /// hotkey neither fires nor swallows the keystroke being recorded).
+    func setEnabled(_ on: Bool) {
+        enabled = on
+        pttActive = false
+        on ? register() : unregister()
+    }
 
-    // MARK: - Tap callback
+    // MARK: - Carbon plumbing
 
-    private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // The system disables the tap on timeout/user-input races; re-enable and pass through.
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            return Unmanaged.passUnretained(event)
-        }
-        guard enabled else { return Unmanaged.passUnretained(event) }
+    private func installHandler() {
+        var specs = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
+        let status = InstallEventHandler(GetApplicationEventTarget(), whisperHotKeyHandler, 2, &specs, nil, &handlerRef)
+        if status != noErr { Log.log("HotKey: InstallEventHandler FAILED status=\(status)") }
+    }
 
-        let code = event.getIntegerValueField(.keyboardEventKeycode)
-        let pass = Unmanaged.passUnretained(event)
+    private func register() {
+        guard hotKeyRef == nil else { return }
+        let id = EventHotKeyID(signature: OSType(0x57485350) /* 'WHSP' */, id: 1)
+        let status = RegisterEventHotKey(keyCode, carbonModifiers, id, GetApplicationEventTarget(), 0, &hotKeyRef)
+        Log.log("HotKey: RegisterEventHotKey(keyCode=\(keyCode) mods=\(carbonModifiers)) status=\(status) (0=ok)")
+    }
 
-        switch type {
-        case .keyDown:
-            let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            guard comboMatches(code: code, flags: event.flags) else { return pass }
-            if isRepeat { return nil } // swallow auto-repeat of our combo
+    private func unregister() {
+        if let ref = hotKeyRef { UnregisterEventHotKey(ref); hotKeyRef = nil }
+    }
+
+    func handle(kind: UInt32) {
+        guard enabled else { return }
+        switch Int(kind) {
+        case kEventHotKeyPressed:
+            Log.log("HotKey: PRESSED (mode=\(mode.rawValue))")
             switch mode {
-            case .toggle:
-                DispatchQueue.main.async { self.onToggle() }
-            case .pushToTalk:
-                if !pttActive { pttActive = true; DispatchQueue.main.async { self.onStart() } }
+            case .toggle: onToggle()
+            case .pushToTalk: if !pttActive { pttActive = true; onStart() }
             }
-            return nil // consume
-
-        case .keyUp:
-            // Modifiers may already be up on key-up, so match the key alone.
-            if mode == .pushToTalk, pttActive, code == keyCode {
+        case kEventHotKeyReleased:
+            if mode == .pushToTalk, pttActive {
                 pttActive = false
-                DispatchQueue.main.async { self.onStop() }
-                return nil
+                Log.log("HotKey: RELEASED → stop")
+                onStop()
             }
-            // Consume the combo's key-up too, to avoid a dangling key-up in the focused app.
-            if comboMatches(code: code, flags: event.flags) { return nil }
-            return pass
-
         default:
-            return pass
+            break
         }
     }
 
-    private func comboMatches(code: Int64, flags: CGEventFlags) -> Bool {
-        guard code == keyCode else { return false }
-        let relevant: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
-        return flags.intersection(relevant) == requiredFlags.intersection(relevant)
-    }
-
-    private static func cgFlags(from m: NSEvent.ModifierFlags) -> CGEventFlags {
-        var f: CGEventFlags = []
-        if m.contains(.command) { f.insert(.maskCommand) }
-        if m.contains(.option) { f.insert(.maskAlternate) }
-        if m.contains(.control) { f.insert(.maskControl) }
-        if m.contains(.shift) { f.insert(.maskShift) }
-        return f
+    private static func carbon(_ m: NSEvent.ModifierFlags) -> UInt32 {
+        var c: UInt32 = 0
+        if m.contains(.command) { c |= UInt32(cmdKey) }
+        if m.contains(.option) { c |= UInt32(optionKey) }
+        if m.contains(.control) { c |= UInt32(controlKey) }
+        if m.contains(.shift) { c |= UInt32(shiftKey) }
+        return c
     }
 }

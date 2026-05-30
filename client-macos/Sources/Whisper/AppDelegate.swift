@@ -24,8 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud = HUDController(state: appState)
         setupStatusItem()
 
+        Log.log("launch: server=\(settings.serverURL.absoluteString) tokenSet=\(!settings.token.isEmpty) "
+            + "activation=\(settings.activation.rawValue) AXTrusted=\(AXIsProcessTrusted())")
+
         AVCaptureDevice.requestAccess(for: .audio) { granted in
-            if !granted { NSLog("Whisper: microphone access denied") }
+            Log.log("mic permission granted=\(granted)")
         }
         ensureAccessibility()
 
@@ -56,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "History…", action: #selector(showHistory), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Reveal Log in Finder", action: #selector(revealLog), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Whisper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -90,6 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleFromMenu() { toggle() }
 
+    @objc private func revealLog() {
+        NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL])
+    }
+
     private func toggle() {
         if appState.phase == .transcribing { return } // serialized server-side
         appState.phase == .recording ? stopAndTranscribe() : startRecording()
@@ -105,7 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try recorder.start(inputUID: settings.inputDeviceUID)
             appState.phase = .recording
+            Log.log("record: started (input=\(settings.inputDeviceUID ?? "system default"))")
         } catch {
+            Log.log("record: start FAILED \(error)")
             appState.phase = .error("Couldn’t start mic")
             scheduleIdle(after: 2)
         }
@@ -117,10 +127,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.level = 0
         guard let url else { appState.phase = .idle; return }
         appState.phase = .transcribing
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+        let t0 = Date()
+        Log.log("transcribe: POST \(url.lastPathComponent) (\(bytes ?? -1) bytes, ~\(Int(appState.elapsed))s)")
         Task { [weak self] in
             guard let self else { return }
             do {
                 let text = try await self.client.transcribe(audioURL: url)
+                let ms = Int(Date().timeIntervalSince(t0) * 1000)
+                Log.log("transcribe: OK in \(ms)ms → \(text.count) chars: \"\(text.prefix(60))\"")
                 await MainActor.run {
                     TextInserter.insert(text)
                     self.history.add(text)
@@ -128,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.scheduleIdle(after: 1)
                 }
             } catch {
+                Log.log("transcribe: FAILED after \(Int(Date().timeIntervalSince(t0)))s → \(error)")
                 await MainActor.run {
                     self.appState.phase = .error(self.describe(error))
                     self.scheduleIdle(after: 2.5)
