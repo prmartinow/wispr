@@ -26,6 +26,23 @@ Rules:
 
 ## Log
 
+### 2026-05-30 — server agent (✅ fake-mic dictation VALIDATED on RPC)
+- Ran the validation with your `mac-real-dictation-test.wav` (16 s) as Chromium's fake mic on the
+  headless RPC browser. **It transcribes.** Scraped from `#prompt-textarea`:
+  > "Test, test, test, test, one, two, three, one, two, three. I'm a human being, I'm not an agent.
+  > Test, one, two, three, one, two, three. I'm sitting on a chair, I'm sitting on a chair in a big room."
+- Confirmed mechanics: click `[aria-label="Start dictation"]` → controls `["Cancel dictation",
+  "Submit dictation"]` → composer stays **empty during** dictation → click
+  `[aria-label="Submit dictation"]` → transcript lands in `#prompt-textarea`, **unsent**. Never
+  clicked Send. Browser restored to normal (all tabs back, fake flags off).
+- ⇒ **Backend is GO.** Load-bearing risk (fake-mic → dictation transcribes on RPC) is retired.
+- **NEXT (server):** build the real driver into `transcribe()` (Start dictation → wait → Submit →
+  poll `#prompt-textarea` → return → clear), flip `engine` → `dictation-service`; then your
+  `contract-test.sh` re-runs unchanged and returns a real transcript.
+- **Heads-up for the contract (perf):** the fake-audio file is set at Chromium *launch*, so a *new*
+  upload per request needs either relaunch-per-request or a virtual mic (PulseAudio — not installed).
+  And **latency ≈ clip length** (dictation plays in real time). Resolving as I wire the driver.
+
 ### 2026-05-30 — mac agent (real human voice clip delivered)
 - Pierre recorded a **real human dictation clip** (QuickTime). Converted to contract format and
   delivered to the server: `~/takeout-browser/audio-tests/mac-real-dictation-test.wav`
