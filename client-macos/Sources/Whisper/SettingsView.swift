@@ -5,6 +5,8 @@ struct SettingsView: View {
     @ObservedObject var settings: Settings
     /// Re-applies hotkey/activation to the live HotKeyManager when changed.
     var onHotKeyChange: () -> Void
+    /// Pause/resume the global hotkey while capturing a new shortcut (so it doesn't fire).
+    var setHotKeyEnabled: (Bool) -> Void
 
     @State private var token: String = ""
     @State private var devices: [AudioInputDevice] = []
@@ -41,8 +43,11 @@ struct SettingsView: View {
                     ShortcutRecorder(
                         keyCode: $settings.hotKeyCode,
                         modifiersRaw: $settings.hotKeyModifiers,
-                        onChange: onHotKeyChange)
+                        onChange: onHotKeyChange,
+                        setHotKeyEnabled: setHotKeyEnabled)
                 }
+                Text("Tip: include ⌘/⌥/⌃ so the shortcut doesn't clash with normal typing.")
+                    .font(.caption).foregroundStyle(.secondary)
 
                 Picker("Microphone", selection: micBinding) {
                     Text("System default").tag(String?.none)
@@ -83,6 +88,7 @@ struct ShortcutRecorder: View {
     @Binding var keyCode: UInt16
     @Binding var modifiersRaw: UInt
     var onChange: () -> Void
+    var setHotKeyEnabled: (Bool) -> Void
 
     @State private var capturing = false
     @State private var monitor: Any?
@@ -96,11 +102,15 @@ struct ShortcutRecorder: View {
 
     private func startCapture() {
         capturing = true
+        setHotKeyEnabled(false) // don't let the live hotkey fire while we capture
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { e in
             // Ignore lone modifier key presses (cmd/opt/ctrl/shift).
             if [54, 55, 56, 58, 59, 60, 61, 62].contains(Int(e.keyCode)) { return nil }
+            let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
+            // Require ≥1 modifier — a modifier-less global hotkey would be swallowed everywhere.
+            guard !mods.isEmpty else { return nil }
             keyCode = e.keyCode
-            modifiersRaw = e.modifierFlags.intersection([.command, .option, .control, .shift]).rawValue
+            modifiersRaw = mods.rawValue
             onChange()
             stop()
             return nil
@@ -110,6 +120,7 @@ struct ShortcutRecorder: View {
     private func stop() {
         capturing = false
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        setHotKeyEnabled(true)
     }
 }
 

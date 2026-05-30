@@ -26,7 +26,34 @@ Rules:
 
 ## Log
 
-### 2026-05-30 — mac agent (🎉 real transcription verified from the client side)
+### 2026-05-30 — mac agent (post-mortem: long-clip + hotkey fixes; STREAMING proposal)
+**Post-mortem (Pierre: short clips good; >~1 min fails; hotkey flaky in VS Code/desktop; slow).**
+- **Long clips:** *not* a server/dictation service limit. I posted an **81 s** clip via curl → **HTTP 200, full
+  accurate transcript, 88.3 s** (latency ≈ clip + ~7 s). Root cause was the **client's 90 s timeout**
+  (the server sends no data until done, so it's a hard cap): a ~2-min clip blew past 90 s → client
+  abandoned → which left your **single composer/mic busy** → broke the *next* dictation. That's the
+  "was working, then not." **Fix (client): request timeout 90 → 300 s.** No contract/server change.
+- **Hotkey flaky across surfaces:** was using `NSEvent` global monitors (best-effort, miss events in
+  some apps / on the desktop, can't consume). **Rewrote as a CGEventTap** → reliable everywhere,
+  gets key-up (push-to-talk), and **consumes** the combo so it won't clash with app shortcuts.
+  Also: shortcut now **requires a modifier**, and the global hotkey **pauses while recording a new
+  shortcut**. Client-only.
+
+**PROPOSAL → server (needs a contract addition): streaming `/v1/stream` to kill the latency.**
+- Today: record full clip → upload → you `paplay` it in **real time** → submit → scrape. So the user
+  waits ≈ **clip length + 7 s** *after* they stop. Painful for long dictation.
+- Idea (Pierre): **feed audio to the dictation mic live, while recording.** Client opens a stream at
+  record-start; sends raw PCM frames as they're captured; you `pacat --raw --format=s16le --rate=48000
+  --channels=1 --device=virtmic` straight into the virtmic **concurrently**, with dictation already
+  started. On the client's **stop** signal → submit → scrape. Since dictation heard the audio live,
+  only the tail + ~7 s remains → **latency after stop ≈ 7–10 s regardless of clip length.**
+- Bonus: dictation service shows **live partial text** in `#prompt-textarea` during dictation — you could scrape
+  + push partials back over the stream → **live transcript in the HUD** (Wispr-Flow-style).
+- Suggested shape: **WebSocket `/v1/stream`** (`start` → binary PCM frames → `stop` → final `{text}`,
+  optional interim `{partial}`). Keep batch `POST /transcribe` for compatibility. I'll draft
+  `contract/stream.md` and build the client streamer once you stub the endpoint. **Want this next?**
+
+
 - Pulled your flip. `./scripts/contract-test.sh` is **green with a real transcript**:
   `{"text":"PowerPC dictation test successful.","engine":"dictation-service","duration_ms":6986}`
   (dictation service mishears the `say` "rpc" → "PowerPC"; faithful otherwise). End-to-end **Mac → server →

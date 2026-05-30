@@ -19,9 +19,12 @@ final class TranscriptionClient {
     init(settings: Settings) {
         self.settings = settings
         let cfg = URLSessionConfiguration.default
-        // Dictation latency ≈ clip length and requests are serialized server-side,
-        // so allow headroom over the ≤30 s prototype clip cap.
-        cfg.timeoutIntervalForRequest = 90
+        // The server holds the connection with no data until dictation finishes, and
+        // dictation plays the clip in real time (latency ≈ clip length + ~5–20 s). So this
+        // is effectively a total cap: keep it well above any sane clip so the client never
+        // abandons a request mid-flight (an abandoned request leaves the server's single
+        // composer/mic busy and breaks the *next* dictation too).
+        cfg.timeoutIntervalForRequest = 300
         self.session = URLSession(configuration: cfg)
     }
 

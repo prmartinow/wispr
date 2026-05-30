@@ -157,7 +157,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showSettings() {
         if settingsWindow == nil {
-            let view = SettingsView(settings: settings, onHotKeyChange: { [weak self] in self?.reconfigureHotKey() })
+            let view = SettingsView(
+                settings: settings,
+                onHotKeyChange: { [weak self] in self?.reconfigureHotKey() },
+                setHotKeyEnabled: { [weak self] on in self?.hotKey.setEnabled(on) })
             settingsWindow = makeWindow(title: "Whisper Settings", content: view)
         }
         present(settingsWindow)
