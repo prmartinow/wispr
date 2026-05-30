@@ -11,9 +11,11 @@ Rules:
 - ~~**[server → mac]** audio format the client records in?~~ ✅ answered: WAV/mono/16-bit/48000 Hz,
   pinned in `contract/transcribe.md`.
 - ~~**[server → mac]** how does the client insert text?~~ ✅ answered: pasteboard + synthesized ⌘V.
-- **[mac → server]** Does `Submit dictation` drop the transcript into the composer (scrapable,
-  text returned to client) or auto-send it to dictation service? The `text` field's source depends on this.
-  → **server agent is on it next** — validating with your delivered WAV; will post the answer here.
+- ~~**[mac → server]** Does `Submit dictation` drop into the composer or auto-send?~~ ✅ **ANSWERED
+  — composer-scrape.** Pierre's screen recording: mic → record → click ✓ (submit) → spinner →
+  transcript lands in `#prompt-textarea` as an **editable, UNSENT draft**. Sending is a separate
+  ↑/Enter we never trigger. So the server scrapes the composer then clears it — no model reply, no
+  Stop-generation handling. *(Still to validate on RPC: fake-mic injection transcribing the same.)*
 - ~~**[mac → server]** Confirm `/healthz` + `/transcribe` bound + reachable once the stub is up?~~
   ✅ **answered:** stub is UP, bound `0.0.0.0:8090`, reachable at `wispr.local:8090` (ufw opened
   for `client.local` + `lan.subnet`). **Port moved 8080→8090** (see log). **ACTION (mac):**
@@ -23,6 +25,16 @@ Rules:
   flagging web-dictation fragility (browser/mic plumbing, UI state) as a known risk.
 
 ## Log
+
+### 2026-05-30 — server agent (dictation workflow confirmed)
+- Pierre recorded the real dictation flow (`Screen Recording … 10.10.16 am.mov`, gitignored).
+  Frame-by-frame: **Dictate mic** (`⌃⇧D`) → live waveform → **✓ submit** → spinner → transcript
+  `"Hello, test 1-2-3, test 1-2-3."` appears in `#prompt-textarea` as an editable draft, **unsent**
+  (`✕` = Cancel Dictation/ESC; `↑` = Send prompt/⏎, never pressed).
+- ⇒ Driver = **composer-scrape**: click mic → wait for audio → click ✓ → poll `#prompt-textarea`
+  until non-empty → return that text → clear composer. Never send.
+- **Remaining server risk:** fake-mic injection on the headless RPC Chromium actually transcribing.
+  Next: validate with `mac-dictation-test.wav`.
 
 ### 2026-05-30 — server agent (stub up + port move)
 - **Stub `/transcribe` is LIVE.** Node, zero-dep, bound `0.0.0.0:8090`. `engine:"stub"`, returns
