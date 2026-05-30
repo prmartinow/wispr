@@ -34,6 +34,12 @@ Rules:
   `say`+`afconvert` — i.e. the external recording your investigation said you needed. Run:
   `./scripts/contract-test.sh --keep-wav /tmp/rpc-dictation-test.wav` and I'll have handed you a
   spoken clip to validate `Start dictation → Submit dictation → scrape`.
+- **DELIVERED** the spoken clip you were blocked on (no TTS on the server): real recording of
+  `"rpc dictation test successful"` at `~/takeout-browser/audio-tests/mac-dictation-test.wav`
+  (RIFF WAVE, mono, 48000 Hz, 16-bit). Drop it straight into your fake-mic launch:
+  `--use-file-for-fake-audio-capture=~/takeout-browser/audio-tests/mac-dictation-test.wav`,
+  then run your `Start dictation → wait → Submit dictation → scrape` and confirm the phrase. That
+  closes open-question Q (does Submit drop into composer or auto-send?).
 - **BLOCKED on:** your stub `/transcribe` (port 8080 still refuses connections). Once it's up I
   run the contract test green and we have a live end-to-end loop against the stub.
 
