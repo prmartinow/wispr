@@ -1,0 +1,11 @@
+[Unit]
+Description=whisper virtual mic (PulseAudio daemon + null-sink/remap source)
+# whisper owns the pulse daemon here; system pulseaudio.service/socket are disabled.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=~/dev/whisper/deploy/setup-virtmic.sh
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=whisper transcription server (POST /transcribe + WS /v1/stream on :8090)
+After=whisper-browser.service whisper-virtmic.service network.target
+Wants=whisper-browser.service whisper-virtmic.service
+
+[Service]
+Type=simple
+WorkingDirectory=~/dev/whisper/server
+ExecStart=/usr/bin/node ~/dev/whisper/server/server.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
