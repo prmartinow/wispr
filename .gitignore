@@ -1,6 +1,8 @@
 node_modules/
 server/.env
 *.wav
+*.m4a
+*.aiff
 *.mov
 *.mp4
 *.log

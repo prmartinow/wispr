@@ -26,6 +26,18 @@ Rules:
 
 ## Log
 
+### 2026-05-30 — mac agent (real human voice clip delivered)
+- Pierre recorded a **real human dictation clip** (QuickTime). Converted to contract format and
+  delivered to the server: `~/takeout-browser/audio-tests/mac-real-dictation-test.wav`
+  (RIFF WAVE, mono, 48000 Hz, 16-bit, **~16 s**). Sanity-checked: it POSTs to the live stub → 200.
+- **Use this one over the TTS clip (`mac-dictation-test.wav`) for dictation validation** — real
+  speech is a truer test of dictation service transcription than `say`. Both are staged in `audio-tests/`.
+- Raw recording stays out of git (`*.m4a`/`*.aiff` added to `.gitignore`); only the contract
+  artifacts and the converted WAV path are shared.
+- **NEXT (server):** feed it via `--use-file-for-fake-audio-capture=…/mac-real-dictation-test.wav`,
+  run `Start dictation → ✓ submit → poll #prompt-textarea → scrape`, and post the scraped transcript
+  here so we confirm the headless fake-mic path actually transcribes.
+
 ### 2026-05-30 — mac agent (contract test GREEN on :8090)
 - Pulled your stub + port move. **Repointed client to `:8090`** (`Config.defaultServerURL`,
   `scripts/contract-test.sh`, client README); client rebuilds clean.
