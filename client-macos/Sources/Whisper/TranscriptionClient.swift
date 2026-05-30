@@ -29,6 +29,11 @@ final class TranscriptionClient {
     }
 
     func transcribe(audioURL: URL) async throws -> String {
+        try await transcribe(wav: try Data(contentsOf: audioURL))
+    }
+
+    /// Batch transcription of in-memory WAV bytes (used as the streaming fallback).
+    func transcribe(wav audio: Data) async throws -> String {
         let endpoint = settings.serverURL.appendingPathComponent("transcribe")
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
@@ -37,7 +42,6 @@ final class TranscriptionClient {
         let boundary = "Boundary-\(UUID().uuidString)"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
-        let audio = try Data(contentsOf: audioURL)
         var body = Data()
         body.appendString("--\(boundary)\r\n")
         body.appendString("Content-Disposition: form-data; name=\"audio\"; filename=\"audio.wav\"\r\n")

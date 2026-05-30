@@ -9,7 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let history = HistoryStore()
     private lazy var appState = AppState(settings: settings, history: history)
     private lazy var client = TranscriptionClient(settings: settings)
-    private let recorder = AudioRecorder()
+    private let capture = AudioStreamCapture()
+    private var stream: StreamingClient?
 
     private var statusItem: NSStatusItem!
     private var toggleItem: NSMenuItem!
@@ -106,15 +107,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startRecording() {
         guard !appState.isBusy else { return }
         idleWork?.cancel()
-        recorder.onMeter = { [weak self] level, elapsed in
+        capture.onMeter = { [weak self] level, elapsed in
             self?.appState.level = level
             self?.appState.elapsed = elapsed
         }
+        // Open the live stream and forward each PCM frame to it. Capture also accumulates the
+        // whole take, so a *transport* failure can fall back to batch POST /transcribe.
+        let s = StreamingClient(settings: settings)
+        capture.onFrame = { [weak s] frame in s?.sendFrame(frame) }
         do {
-            try recorder.start(inputUID: settings.inputDeviceUID)
+            try s.open()
+            try capture.start(inputUID: settings.inputDeviceUID)
+            stream = s
             appState.phase = .recording
-            Log.log("record: started (input=\(settings.inputDeviceUID ?? "system default"))")
+            Log.log("record: started (streaming, input=\(settings.inputDeviceUID ?? "system default"))")
         } catch {
+            s.cancel()
             Log.log("record: start FAILED \(error)")
             appState.phase = .error("Couldn’t start mic")
             scheduleIdle(after: 2)
@@ -123,33 +131,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopAndTranscribe() {
         guard appState.phase == .recording else { return }
-        let url = recorder.stop()
+        let pcm = capture.stop()
+        let streamRef = stream
+        stream = nil
         appState.level = 0
-        guard let url else { appState.phase = .idle; return }
         appState.phase = .transcribing
-        let bytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
         let t0 = Date()
-        Log.log("transcribe: POST \(url.lastPathComponent) (\(bytes ?? -1) bytes, ~\(Int(appState.elapsed))s)")
+        Log.log("transcribe: stop (\(pcm.count) bytes pcm, ~\(Int(appState.elapsed))s) — awaiting stream final")
         Task { [weak self] in
             guard let self else { return }
-            do {
-                let text = try await self.client.transcribe(audioURL: url)
-                let ms = Int(Date().timeIntervalSince(t0) * 1000)
-                Log.log("transcribe: OK in \(ms)ms → \(text.count) chars: \"\(text.prefix(60))\"")
-                await MainActor.run {
+            let result = await self.runTranscription(stream: streamRef, pcm: pcm, t0: t0)
+            await MainActor.run {
+                switch result {
+                case .success(let text):
                     TextInserter.insert(text)
                     self.history.add(text)
                     self.appState.phase = .inserted
                     self.scheduleIdle(after: 1)
-                }
-            } catch {
-                Log.log("transcribe: FAILED after \(Int(Date().timeIntervalSince(t0)))s → \(error)")
-                await MainActor.run {
-                    self.appState.phase = .error(self.describe(error))
+                case .failure(let fail):
+                    self.appState.phase = .error(fail.message)
                     self.scheduleIdle(after: 2.5)
                 }
             }
-            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private struct Fail: Error { let message: String }
+
+    /// Stream first; on a *transport* failure fall back to batch with the accumulated PCM.
+    /// A *semantic* server error (busy/backend) is surfaced without a batch retry.
+    private func runTranscription(stream: StreamingClient?, pcm: Data, t0: Date) async -> Result<String, Fail> {
+        if let stream {
+            do {
+                let text = try await stream.finish()
+                Log.log("stream: final in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars: \"\(text.prefix(60))\"")
+                return text.isEmpty ? .failure(Fail(message: "No speech detected")) : .success(text)
+            } catch let e as StreamingClient.StreamError where e.isSemantic {
+                Log.log("stream: server error \(e) — surfacing (no batch)")
+                return .failure(Fail(message: e.displayMessage))
+            } catch {
+                Log.log("stream: transport failure \(error) — falling back to batch")
+            }
+        }
+        guard !pcm.isEmpty else { return .failure(Fail(message: "No audio captured")) }
+        do {
+            let text = try await client.transcribe(wav: WAV.fromPCM(pcm))
+            Log.log("batch fallback: OK in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
+            return text.isEmpty ? .failure(Fail(message: "No speech detected")) : .success(text)
+        } catch {
+            Log.log("batch fallback: FAILED → \(error)")
+            return .failure(Fail(message: describe(error)))
         }
     }
 

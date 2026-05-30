@@ -34,8 +34,21 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc sign so TCC tracks a stable identity across launches.
-codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "warn: codesign skipped"
+# Sign with a stable local identity if available (so Accessibility/Mic grants survive
+# rebuilds); otherwise fall back to ad-hoc (TCC will reset each build).
+SIGN_CN="Whisper Local Signing"
+SIGN_KC="$HOME/Library/Keychains/whisper-signing.keychain-db"
+"$(dirname "$0")/setup-signing.sh" >/dev/null 2>&1 || true
+if security find-certificate -c "$SIGN_CN" "$SIGN_KC" >/dev/null 2>&1; then
+  security unlock-keychain -p whisper-local "$SIGN_KC" 2>/dev/null || true
+  if codesign --force --sign "$SIGN_CN" --keychain "$SIGN_KC" "$APP" >/dev/null 2>&1; then
+    echo "signed with stable identity '$SIGN_CN' — TCC grants persist across rebuilds"
+  else
+    codesign --force --sign - "$APP" >/dev/null 2>&1; echo "warn: stable sign failed → ad-hoc (TCC resets)"
+  fi
+else
+  codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "warn: codesign skipped"
+fi
 
 echo "Built $APP"
 echo "Run:   open ./$APP   (server defaults to :8090; set URL/token in Settings, or seed once"
