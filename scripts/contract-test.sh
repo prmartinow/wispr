@@ -12,7 +12,7 @@
 #   ./scripts/contract-test.sh --keep-wav /tmp/rpc-dictation-test.wav   # also save the clip
 set -euo pipefail
 
-URL="${WHISPER_SERVER_URL:-http://wispr.local:8080}"
+URL="${WHISPER_SERVER_URL:-http://wispr.local:8090}"
 TOKEN="${WHISPER_TOKEN:-}"
 PHRASE="${WHISPER_TEST_PHRASE:-rpc dictation test successful}"
 OUT_WAV=""

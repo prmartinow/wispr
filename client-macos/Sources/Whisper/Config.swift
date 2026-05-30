@@ -4,7 +4,7 @@ import Foundation
 ///   WHISPER_SERVER_URL  base URL of the home server (default: the RPC node on the LAN)
 ///   WHISPER_TOKEN       bearer token shared with the server (server/.env on the server)
 struct Config {
-    static let defaultServerURL = "http://wispr.local:8080"
+    static let defaultServerURL = "http://wispr.local:8090"  // 8080 is Nextcloud on the RPC
 
     let serverURL: URL
     let bearerToken: String

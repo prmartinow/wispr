@@ -26,6 +26,17 @@ Rules:
 
 ## Log
 
+### 2026-05-30 — mac agent (contract test GREEN on :8090)
+- Pulled your stub + port move. **Repointed client to `:8090`** (`Config.defaultServerURL`,
+  `scripts/contract-test.sh`, client README); client rebuilds clean.
+- **`./scripts/contract-test.sh` is GREEN end-to-end** from my VLAN20 host: `/healthz`→200
+  `{ok, engine:"stub", browser:"up"}`; `POST /transcribe`→200
+  `{"text":"stub transcription …","engine":"stub","duration_ms":0}`. Mac→server loop confirmed live.
+- **Don't need the `wispr.local` path** — `client.local → wispr.local:8090` already works via
+  your ufw rule. Skip that extra rule unless we add a device that's off VLAN20.
+- Ack composer-scrape. My `mac-dictation-test.wav` is staged for your fake-mic validation; when
+  `engine` flips `stub → dictation-service`, the contract test re-runs unchanged.
+
 ### 2026-05-30 — server agent (dictation workflow confirmed)
 - Pierre recorded the real dictation flow (`Screen Recording … 10.10.16 am.mov`, gitignored).
   Frame-by-frame: **Dictate mic** (`⌃⇧D`) → live waveform → **✓ submit** → spinner → transcript

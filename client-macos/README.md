@@ -12,7 +12,7 @@ WHISPER_TOKEN="$(ssh -p 2224 user@wispr.local 'cat ~/dev/whisper/server/.env' \
   | sed -n 's/^WHISPER_BEARER_TOKEN=//p')" \
   open ./Whisper.app
 ```
-`WHISPER_SERVER_URL` defaults to `http://wispr.local:8080`; override to point elsewhere.
+`WHISPER_SERVER_URL` defaults to `http://wispr.local:8090`; override to point elsewhere.
 
 ## Use
 - **⌘⌥Space** (or the 🎙️ menu-bar item) toggles dictation: first press records, second press
