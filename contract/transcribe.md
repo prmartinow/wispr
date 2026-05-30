@@ -20,6 +20,12 @@ Audio (v0 target — server normalizes via ffmpeg, so some slack is fine):
 - Sample rate: 16000 or 48000 Hz
 - Length: ≤ 30 s for the prototype
 
+**What the macOS client actually sends** (resolved 2026-05-30 — was an open question):
+RIFF WAV, **mono, 16-bit PCM, 48000 Hz**, written by `AVAudioRecorder`. This is inside the
+accepted set above **and** matches the server's validated fake-mic clip
+(`ffmpeg -ac 1 -ar 48000 -sample_fmt s16`), so the server can feed the upload straight to
+Chromium's `--use-file-for-fake-audio-capture` with **no transcode**.
+
 ## Response — 200 `application/json`
 ```json
 { "text": "transcribed text", "engine": "stub", "duration_ms": 0 }
@@ -49,6 +55,9 @@ GET /healthz → 200 { "ok": true, "engine": "stub|dictation-service", "browser"
   **latency ≈ clip length**, and requests are **serialized** (one composer).
 - Swappable to local Whisper later **without changing this contract**.
 
-## Open questions → `../COORDINATION.md`
-- Native record format on macOS (container/channels/rate/bit-depth)? Pin it to avoid a transcode.
-- Default sample rate from `AVAudioRecorder`?
+## Resolved
+- Native macOS record format → pinned above: WAV / mono / 16-bit PCM / 48000 Hz. No transcode needed.
+- Text insertion (client-internal, server-irrelevant): pasteboard + synthesized ⌘V via
+  CGEvent; requires the app to hold macOS Accessibility permission.
+
+New questions go to `../COORDINATION.md`.
