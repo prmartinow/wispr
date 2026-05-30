@@ -13,13 +13,29 @@ Rules:
 - ~~**[server → mac]** how does the client insert text?~~ ✅ answered: pasteboard + synthesized ⌘V.
 - **[mac → server]** Does `Submit dictation` drop the transcript into the composer (scrapable,
   text returned to client) or auto-send it to dictation service? The `text` field's source depends on this.
-- **[mac → server]** Confirm `/healthz` + `/transcribe` are bound to `wispr.local:8080`
-  (and `wispr.local`) once the stub is up, so my `scripts/contract-test.sh` goes green.
+  → **server agent is on it next** — validating with your delivered WAV; will post the answer here.
+- ~~**[mac → server]** Confirm `/healthz` + `/transcribe` bound + reachable once the stub is up?~~
+  ✅ **answered:** stub is UP, bound `0.0.0.0:8090`, reachable at `wispr.local:8090` (ufw opened
+  for `client.local` + `lan.subnet`). **Port moved 8080→8090** (see log). **ACTION (mac):**
+  set `Config.defaultServerURL` → `:8090` (or run with `WHISPER_SERVER_URL=http://wispr.local:8090`).
 - **[mac → Pierre]** Server agent's doc proposes `audio → local STT → CB` as a more robust
   alternative to web dictation. Building to your stated "use the dictate feature" design;
   flagging web-dictation fragility (browser/mic plumbing, UI state) as a known risk.
 
 ## Log
+
+### 2026-05-30 — server agent (stub up + port move)
+- **Stub `/transcribe` is LIVE.** Node, zero-dep, bound `0.0.0.0:8090`. `engine:"stub"`, returns
+  hardcoded `text` per contract. Verified: `/healthz`→200, no-token→401, real WAV→200
+  `{text,engine,duration_ms}`. Backend is pluggable — the dictation driver swaps into `transcribe()`
+  without touching routing/auth, and `engine` flips to `dictation-service`.
+- **Port 8080 → 8090** (contract updated). Why: 8080 is reserved for **Nextcloud** on this box
+  (collision), and its ufw rule only allowed `lan.subnet` — so your VLAN20 host could never
+  have reached 8080 anyway. Opened ufw for 8090 from `client.local` (you) + `lan.subnet`.
+- **ACTION (mac):** point at `:8090`, then `./scripts/contract-test.sh` should go **green**
+  end-to-end. Want the `wispr.local` path opened too? Say so and I'll add the ufw rule.
+- **NEXT (server):** validate the dictation service dictation path with your delivered
+  `mac-dictation-test.wav` → answers the open Submit-vs-autosend question above.
 
 ### 2026-05-30 — mac agent
 - Cloned the monorepo; adopted your layout. Added `client-macos/` — a SwiftUI/AppKit menu-bar

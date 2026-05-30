@@ -2,7 +2,7 @@
 
 Jointly owned. Change only via commit + an entry in `../COORDINATION.md`.
 
-- **Base URL (LAN):** `http://wispr.local:8080`
+- **Base URL (LAN):** `http://wispr.local:8090`  ·  *(moved off 8080 — reserved for Nextcloud on this box)*
 - **Auth:** `Authorization: Bearer <token>` — token lives in `server/.env` on the server
   (gitignored). Fetch over SSH; never commit it.
 

@@ -9,7 +9,7 @@ into the focused app. Android client comes later — same server, same contract.
 - **macOS client agent** — runs on the Mac. Owns `client-macos/`.
 - The two agents coordinate **only** through this repo: the **contract** + **`COORDINATION.md`**.
   No direct agent-to-agent chat (it loops, talks past itself, and isn't auditable).
-- The two apps meet at runtime: Mac → `http://wispr.local:8080/transcribe`.
+- The two apps meet at runtime: Mac → `http://wispr.local:8090/transcribe`.
 
 ## Layout
 - `contract/transcribe.md` — the API both sides build against. **Source of truth.**
@@ -26,7 +26,7 @@ cd whisper
 cat contract/transcribe.md COORDINATION.md      # read the interface
 ssh user@wispr.local 'cat ~/dev/whisper/server/.env'   # bearer token (never committed)
 ```
-Server endpoint: `http://wispr.local:8080` (also `wispr.local` on the other subnet).
+Server endpoint: `http://wispr.local:8090` (also `wispr.local` on the other subnet).
 
 ## Sync model
 Hub is the bare repo at `user@wispr.local:~/git/wispr.git`; both agents push/pull it.
