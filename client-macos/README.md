@@ -28,7 +28,7 @@ Server URL defaults to `http://wispr.local:8090`. The token is stored in the **K
 ## Activation (configurable in Settings)
 - **Toggle** — press the shortcut to start, press again to stop.
 - **Push-to-talk** — hold the shortcut to record, release to send.
-- Default shortcut: **⌘⌥Space**.
+- Default shortcut: **⌘⇧1** (⌘⌥Space collides with Finder's "Search This Mac"). Rebind in Settings.
 
 ## Permissions (first run)
 - **Microphone** — prompted on first record (`NSMicrophoneUsageDescription` in the bundle).

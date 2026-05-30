@@ -37,8 +37,10 @@ final class Settings: ObservableObject {
         serverURLString = d.string(forKey: K.serverURL)
             ?? env["WHISPER_SERVER_URL"] ?? "http://wispr.local:8090"
         activation = ActivationMode(rawValue: d.string(forKey: K.activation) ?? "") ?? .toggle
-        hotKeyCode = UInt16((d.object(forKey: K.keyCode) as? Int) ?? 49) // 49 = Space
-        let defaultMods = UInt(NSEvent.ModifierFlags([.command, .option]).rawValue)
+        // Default ⌘⇧1: ⌘⌥Space collides with Finder's "Search This Mac"; ⌘⇧1/2 are unbound
+        // (screenshot shortcuts are ⌘⇧3/4/5). keyCode 18 = "1".
+        hotKeyCode = UInt16((d.object(forKey: K.keyCode) as? Int) ?? 18)
+        let defaultMods = UInt(NSEvent.ModifierFlags([.command, .shift]).rawValue)
         hotKeyModifiers = UInt((d.object(forKey: K.modifiers) as? Int).map(UInt.init) ?? defaultMods)
         inputDeviceUID = d.string(forKey: K.inputUID)
 
