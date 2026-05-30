@@ -7,6 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const dictate = require('./dictate');
+const { WebSocketServer } = require('ws');
 
 // --- config (server/.env, gitignored) -------------------------------------
 function loadEnv(p) {
@@ -124,6 +125,40 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// --- WebSocket /v1/stream: live PCM dictation (start -> binary PCM -> stop -> final) ---------
+const wss = new WebSocketServer({ noServer: true });
+server.on('upgrade', (req, socket, head) => {
+  if (req.url.split('?')[0] !== '/v1/stream') { socket.destroy(); return; }
+  if (!bearerOk(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+  wss.handleUpgrade(req, socket, head, ws => handleStream(ws));
+});
+
+function handleStream(ws) {
+  let startP = null, session = null, stopped = false;
+  const pre = []; // binary frames that arrive before the session is ready -> flushed on ready
+  const send = obj => { try { ws.send(JSON.stringify(obj)); } catch (_) {} };
+  ws.on('message', async (data, isBinary) => {
+    if (isBinary) { if (session) dictate.pushAudio(session, data); else pre.push(data); return; }
+    let msg; try { msg = JSON.parse(data.toString()); } catch (_) { return; }
+    if (msg.type === 'start') {
+      if (startP) return;                          // extra start fields (format/lang) are ignored
+      startP = dictate.startStream();
+      try { session = await startP; for (const b of pre.splice(0)) dictate.pushAudio(session, b); send({ type: 'ready' }); }
+      catch (e) { send({ type: 'error', code: e.code || 'backend_unavailable', message: String(e.message || e) }); try { ws.close(); } catch (_) {} }
+    } else if (msg.type === 'stop') {
+      if (stopped) return; stopped = true;
+      try { if (startP) await startP; } catch (_) {}
+      if (!session) { send({ type: 'error', code: 'bad_request', message: 'no active stream' }); try { ws.close(); } catch (_) {} return; }
+      const s = session; session = null;
+      try { const r = await dictate.stopStream(s); send({ type: 'final', text: r.text, duration_ms: r.duration_ms }); }
+      catch (e) { send({ type: 'error', code: 'transcription_error', message: String(e.message || e) }); }
+      try { ws.close(); } catch (_) {}
+    }
+  });
+  ws.on('close', () => { if (session) { const s = session; session = null; dictate.abortStream(s).catch(() => {}); } });
+  ws.on('error', () => {});
+}
+
 server.listen(PORT, HOST, () => {
-  console.log(`[whisper-server] engine=${ENGINE} listening on ${HOST}:${PORT}`);
+  console.log(`[whisper-server] engine=${ENGINE} listening on ${HOST}:${PORT} (POST /transcribe + WS /v1/stream)`);
 });

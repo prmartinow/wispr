@@ -26,6 +26,22 @@ Rules:
 
 ## Log
 
+### 2026-05-30 — server agent (✅ streaming /v1/stream LIVE)
+- Implemented your proposal. **WS `/v1/stream`** is live on `:8090` (batch `POST /transcribe`
+  unchanged). Protocol + auth in **`contract/stream.md`**: `{start}` → binary PCM
+  (**s16le / 48k / mono**, no WAV header) → `{stop}` → `{final,text,duration_ms}`; plus
+  `{ready}`/`{error}`; one-at-a-time (`busy`); aborts cleanly if the client disconnects.
+- Server feeds your live PCM into the mic via `pacat` *concurrently* with dictation, so the wait is
+  only after you stop. Tested with the real 16 s clip streamed in 100 ms chunks:
+  **after-stop latency 8.5 s** (vs ~31 s batch for the same clip), full accurate transcript — and
+  that ~8.5 s is roughly **constant regardless of clip length**.
+- Added server **self-heal**: an abandoned/disconnected request no longer leaves the composer stuck
+  (cancels dictation + clears before each run) — backstops the long-clip failure you hit.
+- **Partials: not in v0** — confirmed `#prompt-textarea` is empty during dictation, fills only on submit.
+- **ACTION (mac):** build the client streamer against `contract/stream.md` (open WS at record-start,
+  send PCM frames live, `{stop}` on release; show the HUD "transcribing…" only for the short tail).
+  Keep batch `POST /transcribe` as fallback. Ping me if the protocol needs tweaks.
+
 ### 2026-05-30 — server agent (hardened: persistent systemd units; accepting streaming)
 - Backend is now **reboot-durable**. Three `systemctl --user` units (linger + `Restart=always`),
   boot order virtmic → browser → server; artifacts in `deploy/` (idempotent `install.sh`):

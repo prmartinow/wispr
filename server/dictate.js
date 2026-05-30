@@ -1,8 +1,8 @@
 'use strict';
-// dictation service web-dictation backend for /transcribe.
-// Per request: clear composer -> Start dictation -> play WAV into the PulseAudio virtual
-// mic (real time) -> Submit dictation -> scrape #prompt-textarea -> clear. Never sends.
-// Requests are serialized (one composer + one virtual mic).
+// dictation service web-dictation backend. Two modes, both serialized onto the single composer/mic:
+//   - batch : transcribe(buf)                       -> paplay a full WAV, submit, scrape
+//   - stream: startStream()/pushAudio()/stopStream() -> pacat live PCM into the mic, submit, scrape
+// Audio is injected into the PulseAudio virtual mic (sink "virtmic"). Never sends to dictation service.
 
 const fs = require('fs');
 const os = require('os');
@@ -15,11 +15,16 @@ const SINK = process.env.DICTATE_SINK || 'virtmic';
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// --- single-flight mutex (one composer + one mic) ---------------------------
+let _busy = false; const _q = [];
+function acquire() { return new Promise(res => { const t = () => { _busy = true; res(); }; _busy ? _q.push(t) : t(); }); }
+function tryAcquire() { if (_busy) return false; _busy = true; return true; }
+function release() { _busy = false; const n = _q.shift(); if (n) n(); }
+
+// --- browser page (reused; reconnects if dropped) ---------------------------
 let _browser = null, _page = null;
 async function getPage() {
-  if (_page && !_page.isClosed()) {
-    try { await _page.evaluate(() => 1); return _page; } catch (_) { _page = null; }
-  }
+  if (_page && !_page.isClosed()) { try { await _page.evaluate(() => 1); return _page; } catch (_) { _page = null; } }
   if (_browser) { try { await _browser.close(); } catch (_) {} _browser = null; }
   _browser = await chromium.connectOverCDP(CDP, { timeout: 10000 });
   const ctx = _browser.contexts()[0];
@@ -28,57 +33,89 @@ async function getPage() {
   return _page;
 }
 
-function playWav(file) {
-  return new Promise((resolve, reject) => {
-    const p = spawn('paplay', ['--device=' + SINK, file], { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
-    let err = '';
-    p.stderr.on('data', d => (err += d));
-    p.on('error', reject);
-    p.on('close', code => (code === 0 ? resolve() : reject(new Error('paplay exit ' + code + ': ' + err.trim()))));
-  });
-}
-
 const composerText = page => page.evaluate(() => {
   const c = document.querySelector('#prompt-textarea');
   return c ? (c.innerText || c.textContent || '').trim() : '';
 });
 async function clearComposer(page) {
-  try {
-    await page.click('#prompt-textarea', { timeout: 4000 });
-    await page.keyboard.press('Control+A');
-    await page.keyboard.press('Backspace');
-  } catch (_) { /* composer may not be focusable yet; ignore */ }
+  try { await page.click('#prompt-textarea', { timeout: 4000 }); await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace'); } catch (_) {}
+}
+// self-heal: if a previous run left dictation active (e.g. client abandoned), cancel it, then clear.
+async function resetDictation(page) {
+  try { const c = await page.$('[aria-label="Cancel dictation"]'); if (c) { await c.click().catch(() => {}); await sleep(400); } } catch (_) {}
+  await clearComposer(page);
 }
 
-async function _transcribe(audioBuffer) {
-  const page = await getPage();
+// --- audio injectors --------------------------------------------------------
+function playWavFile(file) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('paplay', ['--device=' + SINK, file], { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
+    let err = ''; p.stderr.on('data', d => (err += d));
+    p.on('error', reject);
+    p.on('close', c => (c === 0 ? resolve() : reject(new Error('paplay exit ' + c + ': ' + err.trim()))));
+  });
+}
+const spawnPacat = () => spawn('pacat',
+  ['--playback', '--raw', '--rate=48000', '--format=s16le', '--channels=1', '--device=' + SINK],
+  { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
+
+async function startDictation(page) {
+  await resetDictation(page);
+  await page.click('[aria-label="Start dictation"]', { timeout: 8000 });
+  await page.waitForSelector('[aria-label="Submit dictation"]', { timeout: 8000 });
+}
+async function submitAndScrape(page) {
+  const submit = await page.$('[aria-label="Submit dictation"]');
+  if (submit) await submit.click({ timeout: 8000 }).catch(() => {});
+  let text = '';
+  for (let i = 0; i < 40; i++) { text = await composerText(page); if (text) break; await sleep(500); }
+  await clearComposer(page);
+  return text;
+}
+
+// --- batch mode -------------------------------------------------------------
+async function transcribe(audioBuffer) {
+  await acquire();
   const tmp = path.join(os.tmpdir(), `dictate-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
   fs.writeFileSync(tmp, audioBuffer);
   try {
-    await clearComposer(page);
-    await page.click('[aria-label="Start dictation"]', { timeout: 8000 });
-    await page.waitForSelector('[aria-label="Submit dictation"]', { timeout: 8000 });
-    await playWav(tmp);            // real-time playback into the virtual mic
-    await sleep(1200);             // let trailing words finish transcribing
-    await page.click('[aria-label="Submit dictation"]', { timeout: 8000 });
-    let text = '';
-    for (let i = 0; i < 40; i++) { text = await composerText(page); if (text) break; await sleep(500); }
-    await clearComposer(page);     // leave it clean; never send
-    return text;
-  } finally {
-    fs.unlink(tmp, () => {});
-  }
+    const page = await getPage();
+    await startDictation(page);
+    await playWavFile(tmp);
+    await sleep(1200);
+    return await submitAndScrape(page);
+  } finally { fs.unlink(tmp, () => {}); release(); }
 }
 
-// serialize concurrent requests onto one composer/mic
-let _chain = Promise.resolve();
-function transcribe(audioBuffer) {
-  const result = _chain.then(() => _transcribe(audioBuffer), () => _transcribe(audioBuffer));
-  _chain = result.catch(() => {});
-  return result;
+// --- streaming mode ---------------------------------------------------------
+async function startStream() {
+  if (!tryAcquire()) { const e = new Error('busy'); e.code = 'busy'; throw e; }
+  try {
+    const page = await getPage();
+    await startDictation(page);
+    const pacat = spawnPacat();
+    pacat.on('error', () => {});
+    return { page, pacat, t0: Date.now() };
+  } catch (e) { release(); throw e; }
+}
+function pushAudio(s, buf) { try { if (s && s.pacat && s.pacat.stdin.writable) s.pacat.stdin.write(buf); } catch (_) {} }
+async function stopStream(s) {
+  try {
+    // flush remaining PCM and let pulse drain it into the mic
+    await new Promise(res => { let done = false; const fin = () => { if (!done) { done = true; res(); } };
+      s.pacat.on('close', fin); try { s.pacat.stdin.end(); } catch (_) { fin(); } setTimeout(fin, 8000); });
+    await sleep(2000); // dictation service finishes transcribing the tail still in the pulse buffer
+    const text = await submitAndScrape(s.page);
+    return { text, duration_ms: Date.now() - s.t0 };
+  } finally { try { s.pacat.kill(); } catch (_) {} release(); }
+}
+async function abortStream(s) {
+  try { s.pacat.kill(); } catch (_) {}
+  try { await resetDictation(s.page); } catch (_) {}
+  release();
 }
 
-module.exports = { transcribe };
+module.exports = { transcribe, startStream, pushAudio, stopStream, abortStream };
 
 if (require.main === module) {
   const wav = process.argv[2];
