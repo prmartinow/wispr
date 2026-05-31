@@ -7,47 +7,60 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = Settings()
     private let history = HistoryStore()
+    private let pending = PendingStore()
     private lazy var appState = AppState(settings: settings, history: history)
     private lazy var client = TranscriptionClient(settings: settings)
+    private lazy var health = HealthMonitor(settings: settings)
     private let capture = AudioStreamCapture()
     private var stream: StreamingClient?
 
     private var statusItem: NSStatusItem!
     private var toggleItem: NSMenuItem!
+    private var serverStatusItem: NSMenuItem!
+    private var pendingItem: NSMenuItem!
+    private var pasteLastItem: NSMenuItem!
     private var hud: HUDController!
     private var hotKey: HotKeyManager!
     private var settingsWindow: NSWindow?
     private var historyWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private var idleWork: DispatchWorkItem?
+    private var retrying = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        hud = HUDController(state: appState)
+        hud = HUDController(state: appState,
+                            onStart: { [weak self] in self?.startRecording() },
+                            onStop: { [weak self] in self?.stopAndTranscribe() })
         setupStatusItem()
+        appState.pendingCount = pending.count
 
         Log.log("launch: server=\(settings.serverURL.absoluteString) tokenSet=\(!settings.token.isEmpty) "
-            + "activation=\(settings.activation.rawValue) AXTrusted=\(AXIsProcessTrusted())")
+            + "activation=\(settings.activation.rawValue) AXTrusted=\(AXIsProcessTrusted()) pending=\(pending.count)")
 
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            Log.log("mic permission granted=\(granted)")
-        }
+        AVCaptureDevice.requestAccess(for: .audio) { granted in Log.log("mic permission granted=\(granted)") }
         ensureAccessibility()
 
-        hotKey = HotKeyManager(keyCode: settings.hotKeyCode,
-                               modifiers: settings.modifierFlags,
-                               mode: settings.activation)
+        hotKey = HotKeyManager(keyCode: settings.hotKeyCode, modifiers: settings.modifierFlags, mode: settings.activation)
         hotKey.onToggle = { [weak self] in self?.toggle() }
         hotKey.onStart = { [weak self] in self?.startRecording() }
         hotKey.onStop = { [weak self] in self?.stopAndTranscribe() }
         hotKey.start()
 
-        // Drive the menu-bar icon + HUD from the state machine.
-        appState.$phase
-            .receive(on: RunLoop.main)
-            .sink { [weak self] phase in self?.render(phase) }
+        health.onChange = { [weak self] status in
+            guard let self else { return }
+            self.appState.serverStatus = status
+            self.refreshMenu()
+            Log.log("health: \(status.label)")
+            if status == .up { self.retryPending() } // server recovered → drain the buffer
+        }
+        health.start()
+
+        appState.$phase.receive(on: RunLoop.main)
+            .sink { [weak self] phase in self?.renderMenuBar(phase) }
             .store(in: &cancellables)
 
-        render(.idle)
+        renderMenuBar(.idle)
+        hud.show() // persistent
     }
 
     // MARK: - Menu bar
@@ -57,6 +70,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         toggleItem = NSMenuItem(title: "Start Dictation", action: #selector(toggleFromMenu), keyEquivalent: "")
         menu.addItem(toggleItem)
+        menu.addItem(.separator())
+        serverStatusItem = NSMenuItem(title: "Server: checking…", action: nil, keyEquivalent: "")
+        serverStatusItem.isEnabled = false
+        menu.addItem(serverStatusItem)
+        pendingItem = NSMenuItem(title: "Retry pending", action: #selector(retryPendingAction), keyEquivalent: "")
+        pendingItem.isHidden = true
+        menu.addItem(pendingItem)
+        pasteLastItem = NSMenuItem(title: "Paste Last Transcript", action: #selector(pasteLastAction), keyEquivalent: "")
+        pasteLastItem.isHidden = true
+        menu.addItem(pasteLastItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "History…", action: #selector(showHistory), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
@@ -73,7 +96,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleItem.title = "\(verb)  (\(shortcut))"
     }
 
-    private func render(_ phase: DictationPhase) {
+    private func refreshMenu() {
+        serverStatusItem.title = "Server: \(appState.serverStatus.label)"
+        let n = appState.pendingCount
+        pendingItem.isHidden = n == 0
+        pendingItem.title = "Retry \(n) pending recording\(n == 1 ? "" : "s")"
+        pasteLastItem.isHidden = appState.lastTranscript.isEmpty
+    }
+
+    private func renderMenuBar(_ phase: DictationPhase) {
         guard let button = statusItem.button else { return }
         let (symbol, tint): (String, NSColor?)
         switch phase {
@@ -81,23 +112,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .recording:    (symbol, tint) = ("mic.fill", .systemRed)
         case .transcribing: (symbol, tint) = ("waveform", .systemYellow)
         case .inserted:     (symbol, tint) = ("checkmark.circle.fill", .systemGreen)
+        case .copied:       (symbol, tint) = ("doc.on.clipboard.fill", .systemYellow)
         case .error:        (symbol, tint) = ("exclamationmark.triangle.fill", .systemOrange)
         }
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Whisper")
         image?.isTemplate = (tint == nil)
         button.image = image
         button.contentTintColor = tint
-
-        phase == .idle ? hud.hide() : hud.show()
     }
 
     // MARK: - Dictation flow
 
     @objc private func toggleFromMenu() { toggle() }
-
-    @objc private func revealLog() {
-        NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL])
-    }
+    @objc private func revealLog() { NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL]) }
+    @objc private func retryPendingAction() { health.check(); retryPending() }
+    @objc private func pasteLastAction() { pasteAfterFocus(appState.lastTranscript) }
 
     private func toggle() {
         if appState.phase == .transcribing { return } // serialized server-side
@@ -111,8 +140,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.appState.level = level
             self?.appState.elapsed = elapsed
         }
-        // Open the live stream and forward each PCM frame to it. Capture also accumulates the
-        // whole take, so a *transport* failure can fall back to batch POST /transcribe.
         let s = StreamingClient(settings: settings)
         capture.onFrame = { [weak s] frame in s?.sendFrame(frame) }
         do {
@@ -124,8 +151,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             s.cancel()
             Log.log("record: start FAILED \(error)")
-            appState.phase = .error("Couldn’t start mic")
-            scheduleIdle(after: 2)
+            appState.phase = .error(WhisperError.mic("Microphone unavailable").userMessage)
+            scheduleIdle(after: 2.5)
         }
     }
 
@@ -135,52 +162,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let streamRef = stream
         stream = nil
         appState.level = 0
+
+        // Guard against an accidental tap (well under a spoken word).
+        if pcm.count < 16_000 {
+            streamRef?.cancel()
+            appState.phase = .error("No speech detected")
+            scheduleIdle(after: 2)
+            return
+        }
+
         appState.phase = .transcribing
         let t0 = Date()
-        Log.log("transcribe: stop (\(pcm.count) bytes pcm, ~\(Int(appState.elapsed))s) — awaiting stream final")
+        Log.log("transcribe: stop (\(pcm.count) bytes pcm, ~\(Int(appState.elapsed))s)")
         Task { [weak self] in
             guard let self else { return }
             let result = await self.runTranscription(stream: streamRef, pcm: pcm, t0: t0)
             await MainActor.run {
                 switch result {
                 case .success(let text):
-                    TextInserter.insert(text)
-                    self.history.add(text)
-                    self.appState.phase = .inserted
-                    self.scheduleIdle(after: 1)
-                case .failure(let fail):
-                    self.appState.phase = .error(fail.message)
-                    self.scheduleIdle(after: 2.5)
+                    self.deliver(text)
+                case .failure(let werr):
+                    if werr.shouldBuffer {
+                        self.pending.add(wav: WAV.fromPCM(pcm), reason: werr.userMessage)
+                        self.appState.pendingCount = self.pending.count
+                        self.refreshMenu()
+                        Log.log("buffered take for retry (pending=\(self.pending.count)) — \(werr.userMessage)")
+                    }
+                    self.appState.phase = .error(werr.userMessage)
+                    self.scheduleIdle(after: 3)
                 }
             }
         }
     }
 
-    private struct Fail: Error { let message: String }
-
-    /// Stream first; on a *transport* failure fall back to batch with the accumulated PCM.
-    /// A *semantic* server error (busy/backend) is surfaced without a batch retry.
-    private func runTranscription(stream: StreamingClient?, pcm: Data, t0: Date) async -> Result<String, Fail> {
+    /// Stream first; on a *transport* failure fall back to batch. Semantic server errors are
+    /// classified (busy/backend/etc.) so the caller can buffer or surface appropriately.
+    private func runTranscription(stream: StreamingClient?, pcm: Data, t0: Date) async -> Result<String, WhisperError> {
         if let stream {
             do {
                 let text = try await stream.finish()
-                Log.log("stream: final in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars: \"\(text.prefix(60))\"")
-                return text.isEmpty ? .failure(Fail(message: "No speech detected")) : .success(text)
+                Log.log("stream: final in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
+                return text.isEmpty ? .failure(.noSpeech) : .success(text)
             } catch let e as StreamingClient.StreamError where e.isSemantic {
-                Log.log("stream: server error \(e) — surfacing (no batch)")
-                return .failure(Fail(message: e.displayMessage))
+                Log.log("stream: server error \(e.displayMessage) — not retrying via batch")
+                return .failure(WhisperError.from(e))
             } catch {
-                Log.log("stream: transport failure \(error) — falling back to batch")
+                Log.log("stream: transport failure — falling back to batch")
             }
         }
-        guard !pcm.isEmpty else { return .failure(Fail(message: "No audio captured")) }
+        guard !pcm.isEmpty else { return .failure(.noSpeech) }
         do {
             let text = try await client.transcribe(wav: WAV.fromPCM(pcm))
-            Log.log("batch fallback: OK in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
-            return text.isEmpty ? .failure(Fail(message: "No speech detected")) : .success(text)
+            Log.log("batch: OK in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
+            return text.isEmpty ? .failure(.noSpeech) : .success(text)
         } catch {
-            Log.log("batch fallback: FAILED → \(error)")
-            return .failure(Fail(message: describe(error)))
+            return .failure(WhisperError.from(error))
+        }
+    }
+
+    /// Insert into the focused field, or — if no editable field is focused — keep it on the
+    /// clipboard and tell the user (Scenario 1).
+    private func deliver(_ text: String) {
+        history.add(text)
+        appState.lastTranscript = text
+        refreshMenu()
+        if FocusedField.isEditable() {
+            TextInserter.insert(text)
+            appState.phase = .inserted
+            Log.log("deliver: inserted into focused field")
+            scheduleIdle(after: 1)
+        } else {
+            TextInserter.copy(text)
+            appState.phase = .copied
+            Log.log("deliver: no editable field — copied to clipboard")
+            scheduleIdle(after: 4)
+        }
+    }
+
+    private func retryPending() {
+        guard !retrying, !appState.isBusy, appState.pendingCount > 0 else { return }
+        retrying = true
+        Log.log("retry: draining \(appState.pendingCount) pending")
+        Task { [weak self] in
+            guard let self else { return }
+            var recovered = 0
+            while let item = await MainActor.run(body: { self.pending.oldest() }) {
+                guard let wav = await MainActor.run(body: { self.pending.wav(for: item) }) else {
+                    await MainActor.run { self.pending.remove(item); self.appState.pendingCount = self.pending.count }
+                    continue
+                }
+                do {
+                    let text = try await self.client.transcribe(wav: wav)
+                    await MainActor.run {
+                        if !text.isEmpty {
+                            self.history.add(text)
+                            self.appState.lastTranscript = text
+                            TextInserter.copy(text)
+                            recovered += 1
+                        }
+                        self.pending.remove(item)
+                        self.appState.pendingCount = self.pending.count
+                        self.refreshMenu()
+                    }
+                } catch {
+                    Log.log("retry: still failing — will try again later")
+                    break
+                }
+            }
+            await MainActor.run {
+                self.retrying = false
+                self.refreshMenu()
+                if recovered > 0, !self.appState.isBusy {
+                    Log.log("retry: recovered \(recovered) → last on clipboard + History")
+                    self.appState.phase = .copied
+                    self.scheduleIdle(after: 4)
+                }
+            }
         }
     }
 
@@ -192,12 +289,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         idleWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
-    }
-
-    private func describe(_ error: Error) -> String {
-        if case let TranscriptionClient.ClientError.server(code, _) = error { return "Server: \(code)" }
-        if case TranscriptionClient.ClientError.http(let status) = error { return "HTTP \(status)" }
-        return "Transcription failed"
     }
 
     // MARK: - Windows
@@ -215,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showHistory() {
         if historyWindow == nil {
-            let view = HistoryView(history: history, onPaste: { [weak self] text in self?.pasteFromHistory(text) })
+            let view = HistoryView(history: history, onPaste: { [weak self] text in self?.pasteAfterFocus(text) })
             historyWindow = makeWindow(title: "History", content: view)
         }
         present(historyWindow)
@@ -235,12 +326,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window?.makeKeyAndOrderFront(nil)
     }
 
-    private func pasteFromHistory(_ text: String) {
+    /// Put text on the clipboard, dismiss our windows, and paste into whatever regains focus.
+    private func pasteAfterFocus(_ text: String) {
+        guard !text.isEmpty else { return }
         historyWindow?.orderOut(nil)
-        // Let the previously focused app regain key focus, then paste into it.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            TextInserter.insert(text)
-        }
+        TextInserter.copy(text)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { TextInserter.insert(text) }
     }
 
     private func reconfigureHotKey() {
@@ -252,8 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func ensureAccessibility() {
         guard !AXIsProcessTrusted() else { return }
-        // Prompt to add the app under Accessibility (needed for global hotkey + paste).
-        // Literal key value of kAXTrustedCheckOptionPrompt, used to avoid SDK Unmanaged churn.
+        // Literal kAXTrustedCheckOptionPrompt value, to avoid SDK Unmanaged churn.
         _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
 }

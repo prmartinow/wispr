@@ -1,118 +1,173 @@
 import AppKit
+import Combine
 import SwiftUI
 
-/// The floating dictation pill: a borderless, non-activating panel near the bottom of the
-/// screen. Non-activating + ignoresMouseEvents is essential — it must never steal key focus
-/// from the app you're dictating into, or the ⌘V paste would land in the wrong place.
-final class HUDController {
-    private let panel: NSPanel
+/// Non-activating panel that can still take clicks: it becomes key *within our (inactive) app*
+/// so buttons work, but never activates the app — the focused app stays frontmost so paste lands.
+final class HUDPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
 
-    init(state: AppState) {
-        let host = NSHostingView(rootView: HUDView(state: state))
-        host.frame = NSRect(x: 0, y: 0, width: 360, height: 52)
-        panel = NSPanel(
-            contentRect: host.frame,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: true)
-        panel.contentView = host
+/// Tracking-area host so hover works even though the panel is never the system key window
+/// (SwiftUI `.onHover` won't fire there). Resizes are handled by the controller.
+final class HoverHostView: NSView {
+    var onHover: ((Bool) -> Void)?
+    private var tracking: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        tracking = t
+    }
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
+}
+
+/// The persistent floating pill at bottom-center. Compact when idle; expands on hover (Start)
+/// and while recording (waveform + Stop) / transcribing.
+final class HUDController {
+    private let panel: HUDPanel
+    private let appState: AppState
+    private var cancellables = Set<AnyCancellable>()
+
+    init(state: AppState, onStart: @escaping () -> Void, onStop: @escaping () -> Void) {
+        appState = state
+        let hosting = NSHostingView(rootView: HUDView(state: state, onStart: onStart, onStop: onStop))
+        hosting.autoresizingMask = [.width, .height]
+        let container = HoverHostView()
+        container.onHover = { [weak state] inside in state?.hudHovering = inside }
+        hosting.frame = container.bounds
+        container.addSubview(hosting)
+
+        panel = HUDPanel(contentRect: NSRect(x: 0, y: 0, width: 130, height: 30),
+                         styleMask: [.borderless, .nonactivatingPanel],
+                         backing: .buffered, defer: true)
+        panel.contentView = container
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.level = .floating
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
+        Publishers.CombineLatest(state.$phase, state.$hudHovering)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] phase, hovering in self?.layout(phase: phase, hovering: hovering) }
+            .store(in: &cancellables)
     }
 
-    func show() {
-        positionBottomCenter()
-        panel.orderFrontRegardless()
-    }
-
+    func show() { layout(phase: appState.phase, hovering: appState.hudHovering); panel.orderFrontRegardless() }
     func hide() { panel.orderOut(nil) }
 
-    private func positionBottomCenter() {
+    private func layout(phase: DictationPhase, hovering: Bool) {
+        let size = Self.size(phase: phase, hovering: hovering)
         guard let screen = NSScreen.main else { return }
         let vf = screen.visibleFrame
-        let size = panel.frame.size
-        panel.setFrameOrigin(NSPoint(x: vf.midX - size.width / 2, y: vf.minY + 28))
+        let origin = NSPoint(x: vf.midX - size.width / 2, y: vf.minY + 18)
+        panel.setFrame(NSRect(origin: origin, size: size), display: true, animate: false)
+    }
+
+    private static func size(phase: DictationPhase, hovering: Bool) -> NSSize {
+        switch phase {
+        case .idle:         return hovering ? NSSize(width: 210, height: 40) : NSSize(width: 130, height: 30)
+        case .recording:    return NSSize(width: 330, height: 54)
+        case .transcribing: return NSSize(width: 240, height: 46)
+        case .inserted, .copied, .error: return NSSize(width: 300, height: 46)
+        }
     }
 }
 
 struct HUDView: View {
     @ObservedObject var state: AppState
-    @State private var bars: [CGFloat] = Array(repeating: 0.06, count: 28)
+    var onStart: () -> Void
+    var onStop: () -> Void
+    @State private var bars: [CGFloat] = Array(repeating: 0.06, count: 22)
 
     var body: some View {
-        HStack(spacing: 12) {
-            dot
-            content
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 18)
-        .frame(width: 360, height: 52)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.10), lineWidth: 1))
-        .opacity(state.phase == .idle ? 0 : 1)
-        .animation(.easeOut(duration: 0.15), value: state.level)
-        .onChange(of: state.level) { newValue in
-            bars.removeFirst()
-            bars.append(max(0.06, newValue))
-        }
-    }
-
-    private var dot: some View {
-        Circle()
-            .fill(dotColor)
-            .frame(width: 10, height: 10)
-            .shadow(color: dotColor.opacity(0.7), radius: 4)
+        content
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.10)))
+            .onChange(of: state.level) { v in bars.removeFirst(); bars.append(max(0.06, v)) }
     }
 
     @ViewBuilder private var content: some View {
         switch state.phase {
-        case .recording:
-            waveform
-            Text(timeString)
-                .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(.secondary)
-        case .transcribing:
-            ProgressView().controlSize(.small)
-            Text("transcribing…").font(.callout)
-            Spacer(minLength: 0)
-            Text(timeString)
-                .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(.secondary)
-        case .inserted:
-            Text("inserted").font(.callout).foregroundStyle(.green)
-        case .error(let message):
-            Text(message).font(.callout).foregroundStyle(.red).lineLimit(1)
         case .idle:
-            EmptyView()
+            if state.hudExpanded {
+                HStack(spacing: 10) {
+                    statusDot
+                    Button(action: onStart) { Label("Start", systemImage: "mic.fill") }
+                        .buttonStyle(.borderless)
+                    Spacer(minLength: 0)
+                    Text(state.serverStatus.label).font(.caption2).foregroundStyle(.secondary)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    statusDot
+                    Image(systemName: "mic").font(.system(size: 12)).foregroundStyle(.secondary)
+                    if state.pendingCount > 0 {
+                        Text("\(state.pendingCount)").font(.caption2.bold()).foregroundStyle(.orange)
+                    }
+                }
+            }
+        case .recording:
+            HStack(spacing: 10) {
+                Circle().fill(.red).frame(width: 9, height: 9)
+                waveform
+                Text(timeString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                Button(action: onStop) { Label("Stop", systemImage: "stop.fill") }
+                    .buttonStyle(.borderless).tint(.red)
+            }
+        case .transcribing:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("transcribing…").font(.callout)
+                Spacer(minLength: 0)
+                Text(timeString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+            }
+        case .inserted:
+            label("checkmark.circle.fill", .green, "inserted")
+        case .copied:
+            label("doc.on.clipboard", .yellow, "Copied — ⌘V to paste")
+        case .error(let message):
+            label("exclamationmark.triangle.fill", .orange, message)
         }
     }
 
+    private func label(_ symbol: String, _ color: Color, _ text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(color)
+            Text(text).font(.callout).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var statusDot: some View {
+        Circle().fill(statusColor).frame(width: 8, height: 8)
+    }
+    private var statusColor: Color {
+        switch state.serverStatus {
+        case .up: return .green
+        case .backendDown: return .orange
+        case .unreachable: return .red
+        case .unknown: return .gray
+        }
+    }
     private var waveform: some View {
-        HStack(alignment: .center, spacing: 2.5) {
+        HStack(alignment: .center, spacing: 2) {
             ForEach(bars.indices, id: \.self) { i in
-                Capsule()
-                    .fill(.primary.opacity(0.85))
-                    .frame(width: 2.5, height: 4 + bars[i] * 26)
+                Capsule().fill(.primary.opacity(0.85)).frame(width: 2, height: 4 + bars[i] * 22)
             }
         }
-        .frame(height: 30)
+        .frame(maxWidth: .infinity).frame(height: 26)
     }
-
-    private var dotColor: Color {
-        switch state.phase {
-        case .recording: return .red
-        case .transcribing: return .yellow
-        case .inserted: return .green
-        case .error: return .orange
-        case .idle: return .gray
-        }
-    }
-
     private var timeString: String {
         let s = Int(state.elapsed)
         return String(format: "%d:%02d", s / 60, s % 60)

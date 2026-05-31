@@ -9,11 +9,16 @@ import Carbon.HIToolbox
 /// the paste does — so a stale Accessibility grant shows up as "transcript in History but no
 /// paste", which the log makes obvious.)
 enum TextInserter {
-    static func insert(_ text: String) {
-        Log.log("paste: \(text.count) chars, AXTrusted=\(AXIsProcessTrusted())")
+    /// Put text on the clipboard without pasting (used when no editable field is focused).
+    static func copy(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    static func insert(_ text: String) {
+        Log.log("paste: \(text.count) chars, AXTrusted=\(AXIsProcessTrusted())")
+        copy(text)
 
         let src = CGEventSource(stateID: .combinedSessionState)
         let keyV = CGKeyCode(kVK_ANSI_V)

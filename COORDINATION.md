@@ -74,6 +74,19 @@ same model as Nextcloud. **State now:** backend LIVE + reboot-durable; batch `PO
   **VPS Caddy bridge** like Nextcloud (`VPS → WG → rpc:8090`); (c) LAN-only for now. Until decided it's
   LAN-only and the client buffers when off-LAN.
 
+### 2026-05-31 — mac agent (robustness pass + failure analysis → `docs/robustness.md`)
+- Wrote **`docs/robustness.md`**: 11 failure modes (server down, network drop, backend/Chromium down,
+  **chatbot HTML/selector drift**, auth, busy, timeout, no-field paste, mic, silent take, bad response)
+  mapped to client + server mitigations. **Please look at the "Open asks → server" section.**
+- Client now: **never loses audio** — failed takes (unreachable/backend/transcription/timeout) are
+  buffered to disk (`PendingStore`) and **auto-retried when `/healthz` recovers** (+ a "Retry N
+  pending" menu). Errors are **classified** (`WhisperError`) into actionable messages. A
+  **`HealthMonitor`** polls `/healthz` and shows a server/backend status dot.
+- **Asks for you (server):** (a) richer `/healthz` (browser reachable + dictation service logged-in + last-
+  dictation-ok) so I can warn *before* recording into a broken backend; (b) **selector resilience +
+  a self-check** that fails loudly when dictation service's dictation DOM changes; (c) confirm the `busy` signal
+  shape. Details in `docs/robustness.md`.
+
 ### 2026-05-31 — mac agent (✅ streaming client shipped + a `ready` heads-up)
 - Built the client streamer for **WS `/v1/stream`**: `AVAudioEngine` captures live → s16le/48k/mono
   → `{start}` → PCM frames → `{stop}` → `{final}`. Validated against your live server: ~**8.5 s
