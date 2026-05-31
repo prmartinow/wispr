@@ -16,10 +16,8 @@ enum TextInserter {
         pb.setString(text, forType: .string)
     }
 
-    static func insert(_ text: String) {
-        Log.log("paste: \(text.count) chars, AXTrusted=\(AXIsProcessTrusted())")
-        copy(text)
-
+    /// Synthesize ⌘V into whatever is focused (clipboard must already hold the text).
+    static func pasteKeystroke() {
         let src = CGEventSource(stateID: .combinedSessionState)
         let keyV = CGKeyCode(kVK_ANSI_V)
         let down = CGEvent(keyboardEventSource: src, virtualKey: keyV, keyDown: true)
@@ -28,5 +26,11 @@ enum TextInserter {
         up?.flags = .maskCommand
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
+    }
+
+    static func insert(_ text: String) {
+        Log.log("paste: \(text.count) chars, AXTrusted=\(AXIsProcessTrusted())")
+        copy(text)
+        pasteKeystroke()
     }
 }

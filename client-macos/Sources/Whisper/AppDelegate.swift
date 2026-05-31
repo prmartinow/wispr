@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var idleWork: DispatchWorkItem?
     private var retrying = false
+    private var pasteTargetApp: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hud = HUDController(state: appState,
@@ -77,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingItem = NSMenuItem(title: "Retry pending", action: #selector(retryPendingAction), keyEquivalent: "")
         pendingItem.isHidden = true
         menu.addItem(pendingItem)
-        pasteLastItem = NSMenuItem(title: "Paste Last Transcript", action: #selector(pasteLastAction), keyEquivalent: "")
+        pasteLastItem = NSMenuItem(title: "Copy Last Transcript", action: #selector(copyLastAction), keyEquivalent: "")
         pasteLastItem.isHidden = true
         menu.addItem(pasteLastItem)
         menu.addItem(.separator())
@@ -126,7 +127,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleFromMenu() { toggle() }
     @objc private func revealLog() { NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL]) }
     @objc private func retryPendingAction() { health.check(); retryPending() }
-    @objc private func pasteLastAction() { pasteAfterFocus(appState.lastTranscript) }
+    @objc private func copyLastAction() {
+        guard !appState.lastTranscript.isEmpty else { return }
+        TextInserter.copy(appState.lastTranscript)
+        appState.phase = .copied
+        scheduleIdle(after: 3)
+    }
 
     private func toggle() {
         if appState.phase == .transcribing { return } // serialized server-side
@@ -136,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startRecording() {
         guard !appState.isBusy else { return }
         idleWork?.cancel()
+        pasteTargetApp = NSWorkspace.shared.frontmostApplication // where to paste back into
         capture.onMeter = { [weak self] level, elapsed in
             self?.appState.level = level
             self?.appState.elapsed = elapsed
@@ -177,11 +184,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             guard let self else { return }
             let result = await self.runTranscription(stream: streamRef, pcm: pcm, t0: t0)
-            await MainActor.run {
-                switch result {
-                case .success(let text):
-                    self.deliver(text)
-                case .failure(let werr):
+            switch result {
+            case .success(let text):
+                await self.deliver(text)
+            case .failure(let werr):
+                await MainActor.run {
                     if werr.shouldBuffer {
                         self.pending.add(wav: WAV.fromPCM(pcm), reason: werr.userMessage)
                         self.appState.pendingCount = self.pending.count
@@ -220,22 +227,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Insert into the focused field, or — if no editable field is focused — keep it on the
-    /// clipboard and tell the user (Scenario 1).
-    private func deliver(_ text: String) {
+    /// Paste, then **confirm it landed** (Scenario 1, hardened). Always attempt the paste;
+    /// re-focus the app we recorded from if our HUD took front; verify by reading the field's
+    /// value back. If unconfirmed, keep it on the clipboard and show the "⌘V to paste" hint.
+    @MainActor
+    private func deliver(_ text: String) async {
         history.add(text)
         appState.lastTranscript = text
         refreshMenu()
-        if FocusedField.isEditable() {
-            TextInserter.insert(text)
+        TextInserter.copy(text)
+
+        // If clicking the HUD (or anything) took front, bring the original app back first.
+        if let app = pasteTargetApp, app != NSWorkspace.shared.frontmostApplication {
+            app.activate(options: [.activateIgnoringOtherApps])
+            try? await Task.sleep(nanoseconds: 140_000_000)
+        }
+
+        let el = FocusedField.focusedElement()
+        let before = FocusedField.valueLength(el)
+        TextInserter.pasteKeystroke()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        if FocusedField.confirmInserted(el, expected: text, before: before) {
             appState.phase = .inserted
-            Log.log("deliver: inserted into focused field")
+            Log.log("deliver: paste CONFIRMED (\(text.count) chars)")
             scheduleIdle(after: 1)
         } else {
-            TextInserter.copy(text)
-            appState.phase = .copied
-            Log.log("deliver: no editable field — copied to clipboard")
-            scheduleIdle(after: 4)
+            appState.phase = .copied      // hint persists so the user can ⌘V manually
+            Log.log("deliver: paste NOT confirmed — kept on clipboard (⌘V hint)")
+            scheduleIdle(after: 8)
         }
     }
 

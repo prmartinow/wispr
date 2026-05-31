@@ -1,32 +1,52 @@
 import ApplicationServices
 
-/// Checks whether the system-wide focused element can accept pasted text, so we don't fire
-/// ⌘V into the void (Scenario 1). Uses the Accessibility API (already granted for paste).
+/// Accessibility helpers for paste targeting + verification (Scenario 1, hardened).
+/// We don't *gate* pasting on "is this editable" anymore — that produced false negatives
+/// (e.g. Electron editors) and silently skipped the paste. Instead we always attempt the
+/// paste and then **confirm** it by reading the field's value back.
 enum FocusedField {
-    private static let editableRoles: Set<String> = [
-        kAXTextFieldRole as String,
-        kAXTextAreaRole as String,
-        kAXComboBoxRole as String,
-        "AXSearchField",
-    ]
-
-    static func isEditable() -> Bool {
+    static func focusedElement() -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-              CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
-        let element = focused as! AXUIElement
+              let f = focused, CFGetTypeID(f) == AXUIElementGetTypeID() else { return nil }
+        return (f as! AXUIElement)
+    }
 
-        var roleRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
-        if let role = roleRef as? String, editableRoles.contains(role) { return true }
+    static func role(_ el: AXUIElement) -> String {
+        var r: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &r)
+        return (r as? String) ?? ""
+    }
 
-        // contentEditable / custom editors: the value is a settable string.
-        var settable: DarwinBoolean = false
-        if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
-           settable.boolValue {
+    static let editableRoles: Set<String> = [
+        kAXTextFieldRole as String, kAXTextAreaRole as String,
+        kAXComboBoxRole as String, "AXSearchField",
+    ]
+
+    static func stringValue(_ el: AXUIElement) -> String? {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success else { return nil }
+        return v as? String
+    }
+
+    static func valueLength(_ el: AXUIElement?) -> Int? {
+        guard let el else { return nil }
+        return stringValue(el)?.count
+    }
+
+    /// Did the text land? Confirmed if the value grew by ~the inserted length, or now contains
+    /// the tail of what we pasted. If the value can't be read (some web fields), trust a standard
+    /// editable role; otherwise treat as NOT pasted so we can warn + keep it on the clipboard.
+    static func confirmInserted(_ el: AXUIElement?, expected: String, before: Int?) -> Bool {
+        guard let el else { return false }
+        if let after = valueLength(el), let b = before, after >= b + max(1, expected.count - 3) {
             return true
         }
-        return false
+        if let v = stringValue(el) {
+            let tail = String(expected.suffix(min(16, expected.count)))
+            return !tail.isEmpty && v.contains(tail)
+        }
+        return editableRoles.contains(role(el)) // value unreadable → trust standard editable roles
     }
 }

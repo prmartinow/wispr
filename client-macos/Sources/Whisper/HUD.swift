@@ -74,7 +74,7 @@ final class HUDController {
 
     private static func size(phase: DictationPhase, hovering: Bool) -> NSSize {
         switch phase {
-        case .idle:         return hovering ? NSSize(width: 210, height: 40) : NSSize(width: 130, height: 30)
+        case .idle:         return hovering ? NSSize(width: 222, height: 42) : NSSize(width: 72, height: 26)
         case .recording:    return NSSize(width: 330, height: 54)
         case .transcribing: return NSSize(width: 240, height: 46)
         case .inserted, .copied, .error: return NSSize(width: 300, height: 46)
@@ -88,12 +88,14 @@ struct HUDView: View {
     var onStop: () -> Void
     @State private var bars: [CGFloat] = Array(repeating: 0.06, count: 22)
 
+    private var compact: Bool { state.phase == .idle && !state.hudExpanded }
+
     var body: some View {
         content
-            .padding(.horizontal, 12)
+            .padding(.horizontal, compact ? 9 : 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.10)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.08)))
             .onChange(of: state.level) { v in bars.removeFirst(); bars.append(max(0.06, v)) }
     }
 
@@ -104,16 +106,18 @@ struct HUDView: View {
                 HStack(spacing: 10) {
                     statusDot
                     Button(action: onStart) { Label("Start", systemImage: "mic.fill") }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.borderedProminent).controlSize(.small)
                     Spacer(minLength: 0)
                     Text(state.serverStatus.label).font(.caption2).foregroundStyle(.secondary)
                 }
             } else {
-                HStack(spacing: 8) {
-                    statusDot
-                    Image(systemName: "mic").font(.system(size: 12)).foregroundStyle(.secondary)
+                // Compact idle: minimal + low-intensity so it doesn't distract during focus work.
+                HStack(spacing: 5) {
+                    Circle().fill(statusColor.opacity(0.45)).frame(width: 5, height: 5)
+                    Image(systemName: "mic").font(.system(size: 11)).foregroundStyle(.secondary)
                     if state.pendingCount > 0 {
-                        Text("\(state.pendingCount)").font(.caption2.bold()).foregroundStyle(.orange)
+                        Text("\(state.pendingCount)").font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.orange.opacity(0.85))
                     }
                 }
             }
@@ -123,7 +127,7 @@ struct HUDView: View {
                 waveform
                 Text(timeString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                 Button(action: onStop) { Label("Stop", systemImage: "stop.fill") }
-                    .buttonStyle(.borderless).tint(.red)
+                    .buttonStyle(.borderedProminent).controlSize(.small).tint(.red)
             }
         case .transcribing:
             HStack(spacing: 10) {
