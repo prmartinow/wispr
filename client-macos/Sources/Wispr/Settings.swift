@@ -19,12 +19,12 @@ enum ActivationMode: String, CaseIterable, Identifiable {
 final class Settings: ObservableObject {
     private let d = UserDefaults.standard
     private enum K {
-        static let serverURL = "whisper.serverURL"
-        static let activation = "whisper.activation"
-        static let keyCode = "whisper.hotkey.keyCode"
-        static let modifiers = "whisper.hotkey.modifiers"
-        static let inputUID = "whisper.input.uid"
-        static let remoteURL = "whisper.remoteURL"
+        static let serverURL = "wispr.serverURL"
+        static let activation = "wispr.activation"
+        static let keyCode = "wispr.hotkey.keyCode"
+        static let modifiers = "wispr.hotkey.modifiers"
+        static let inputUID = "wispr.input.uid"
+        static let remoteURL = "wispr.remoteURL"
     }
 
     @Published var serverURLString: String { didSet { d.set(serverURLString, forKey: K.serverURL) } }
@@ -43,7 +43,7 @@ final class Settings: ObservableObject {
         let initialServer = d.string(forKey: K.serverURL)
             ?? env["WHISPER_SERVER_URL"] ?? "http://wispr.local:8090"
         serverURLString = initialServer
-        remoteURLString = d.string(forKey: K.remoteURL) ?? env["WHISPER_REMOTE_URL"] ?? "https://whisper.p12w.xyz"
+        remoteURLString = d.string(forKey: K.remoteURL) ?? env["WHISPER_REMOTE_URL"] ?? "https://wispr.p12w.xyz"
         activeServerURL = URL(string: initialServer) ?? URL(string: "http://wispr.local:8090")!
         activation = ActivationMode(rawValue: d.string(forKey: K.activation) ?? "") ?? .toggle
         // Default ⌘⇧1: ⌘⌥Space collides with Finder's "Search This Mac"; ⌘⇧1/2 are unbound
@@ -61,7 +61,7 @@ final class Settings: ObservableObject {
         URL(string: serverURLString) ?? URL(string: "http://wispr.local:8090")!
     }
 
-    /// Optional off-LAN endpoint (e.g. https://whisper.p12w.xyz), reached over mTLS.
+    /// Optional off-LAN endpoint (e.g. https://wispr.p12w.xyz), reached over mTLS.
     var remoteURL: URL? {
         let s = remoteURLString.trimmingCharacters(in: .whitespaces)
         return s.isEmpty ? nil : URL(string: s)
@@ -77,7 +77,7 @@ final class Settings: ObservableObject {
 }
 
 enum Keychain {
-    private static let service = "xyz.p12w.whisper"
+    private static let service = "xyz.p12w.wispr"
 
     static func set(_ value: String, account: String) {
         let base: [String: Any] = [

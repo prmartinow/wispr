@@ -2,7 +2,7 @@ import Foundation
 
 /// Every pipeline failure, classified into something the UI can act on:
 /// a user message, whether to **buffer** the take for retry, and whether it's the user's to fix.
-enum WhisperError: Error {
+enum WisprError: Error {
     case unreachable          // can't reach the server (process down / network)
     case unauthorized         // 401 — token wrong/rotated
     case busy                 // server busy (one composer at a time)
@@ -35,8 +35,8 @@ enum WhisperError: Error {
         }
     }
 
-    static func from(_ error: Error) -> WhisperError {
-        if let w = error as? WhisperError { return w }
+    static func from(_ error: Error) -> WisprError {
+        if let w = error as? WisprError { return w }
 
         if let s = error as? StreamingClient.StreamError {
             switch s {
@@ -66,7 +66,7 @@ enum WhisperError: Error {
         return .other("Failed: \(error.localizedDescription)")
     }
 
-    private static func fromCode(_ code: String) -> WhisperError {
+    private static func fromCode(_ code: String) -> WisprError {
         switch code {
         case "unauthorized":        return .unauthorized
         case "busy":                return .busy

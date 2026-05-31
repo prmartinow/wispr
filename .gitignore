@@ -10,7 +10,7 @@ server/.env
 client-macos/build/
 client-macos/.build/
 client-macos/DerivedData/
-client-macos/Whisper.app/
+client-macos/Wispr.app/
 
 # mTLS client cert (off-repo)
 *.p12

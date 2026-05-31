@@ -2,7 +2,7 @@ import Foundation
 
 /// Picks the active endpoint: prefer **LAN** (`wispr.local:8090`, fast, no mTLS — also covers
 /// WireGuard since the same IP routes over the tunnel); fall back to the **remote** mTLS URL
-/// (`https://whisper.p12w.xyz`) when LAN isn't reachable. Re-evaluates at launch, periodically,
+/// (`https://wispr.p12w.xyz`) when LAN isn't reachable. Re-evaluates at launch, periodically,
 /// and on demand. Sets `settings.activeServerURL`, which the clients read per request.
 final class EndpointSelector {
     private let settings: Settings

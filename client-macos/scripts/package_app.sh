@@ -1,41 +1,42 @@
 #!/usr/bin/env bash
-# Build the SPM executable and wrap it in a proper .app bundle.
-# The bundle + Info.plist are required so macOS TCC will grant Microphone access
-# (a bare CLI binary has no usage string and would crash on requestAccess).
+# Build the SPM executable and wrap it in a proper Wispr.app bundle (Info.plist for TCC + icon).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
 swift build -c "$CONFIG"
-BIN=".build/$CONFIG/Whisper"
-APP="Whisper.app"
+BIN=".build/$CONFIG/Wispr"
+APP="Wispr.app"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-cp "$BIN" "$APP/Contents/MacOS/Whisper"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$BIN" "$APP/Contents/MacOS/Wispr"
+[ -f assets/AppIcon.icns ] && cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Whisper</string>
-  <key>CFBundleDisplayName</key><string>Whisper</string>
-  <key>CFBundleIdentifier</key><string>xyz.p12w.whisper</string>
+  <key>CFBundleName</key><string>Wispr</string>
+  <key>CFBundleDisplayName</key><string>Wispr</string>
+  <key>CFBundleIdentifier</key><string>xyz.p12w.wispr</string>
   <key>CFBundleVersion</key><string>0.1</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
-  <key>CFBundleExecutable</key><string>Whisper</string>
+  <key>CFBundleExecutable</key><string>Wispr</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Whisper records your voice so it can be transcribed by your dictation server.</string>
+  <string>Wispr records your voice so it can be transcribed by your dictation server.</string>
 </dict>
 </plist>
 PLIST
 
-# Sign with a stable local identity if available (so Accessibility/Mic grants survive
-# rebuilds); otherwise fall back to ad-hoc (TCC will reset each build).
+# Stable local code-signing identity so Accessibility/Mic grants survive rebuilds. The signing
+# keychain is intentionally still named "whisper-signing" (internal, invisible) — renaming it
+# would force re-creating the cert and an extra re-grant for no user benefit.
 SIGN_CN="Whisper Local Signing"
 SIGN_KC="$HOME/Library/Keychains/whisper-signing.keychain-db"
 "$(dirname "$0")/setup-signing.sh" >/dev/null 2>&1 || true
@@ -51,7 +52,7 @@ else
 fi
 
 echo "Built $APP"
-echo "Run:   open ./$APP   (server defaults to :8090; set URL/token in Settings, or seed once"
-echo "       with WHISPER_SERVER_URL / WHISPER_TOKEN env on first launch — token goes to Keychain)"
-echo "Logs:  ./$APP/Contents/MacOS/Whisper   (foreground, prints NSLog output)"
+echo "Run:   open ./$APP   (server defaults to :8090; configure in Settings, or seed once via"
+echo "       WHISPER_SERVER_URL / WHISPER_TOKEN env on first launch — token goes to Keychain)"
+echo "Logs:  ~/Library/Logs/Wispr/wispr.log  (or menu → Reveal Log in Finder)"
 echo "Grant Microphone + Accessibility when prompted (Accessibility = global hotkey + paste)."

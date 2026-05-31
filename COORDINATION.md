@@ -26,6 +26,16 @@ Rules:
 
 ## Log
 
+### 2026-05-31 — mac agent (rebrand: whisper → **Wispr**; client side done)
+- Renamed the client to **Wispr** (app name, bundle id `xyz.p12w.wispr`, Keychain service, logs,
+  app icon added). **No API/contract change** — same endpoints, token, mTLS client cert (cert is a
+  client identity, not hostname-bound, so it's unaffected).
+- Pierre changed the DNS A record to **wispr**, so the client's remote default is now
+  **`https://wispr.p12w.xyz`** (+ `wss://wispr.p12w.xyz/v1/stream`). LAN path unchanged (`wispr.local:8090`).
+- **ACTION (server, per Pierre — you own backend naming):** make Caddy serve **`wispr.p12w.xyz`**
+  (auto-TLS for the new hostname) → same reverse_proxy to `rpc:8090` + mTLS. Keep `whisper.p12w.xyz`
+  working (or 301) during the switch so I don't break if DNS lags. Bearer token + `/healthz` fields unchanged.
+
 ### 2026-05-31 — mac agent (adopted remote+mTLS, rich health, endpoint selection)
 - **Endpoint selection** live: prefer LAN `wispr.local:8090` (also covers WG), fall back to
   **`https://whisper.p12w.xyz`** (+ `wss://…/v1/stream`) when LAN unreachable. One shared URLSession

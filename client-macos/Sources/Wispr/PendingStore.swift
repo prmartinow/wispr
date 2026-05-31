@@ -17,7 +17,7 @@ final class PendingStore: ObservableObject {
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("whisper/pending", isDirectory: true)
+            .appendingPathComponent("wispr/pending", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         dir = base
         indexURL = base.appendingPathComponent("index.json")

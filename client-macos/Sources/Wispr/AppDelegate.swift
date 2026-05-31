@@ -92,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Reveal Log in Finder", action: #selector(revealLog), keyEquivalent: ""))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Whisper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit Wispr", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
         updateToggleTitle()
     }
@@ -116,14 +116,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         let (symbol, tint): (String, NSColor?)
         switch phase {
-        case .idle:         (symbol, tint) = ("mic", nil)
+        case .idle:         (symbol, tint) = ("waveform", nil)
         case .recording:    (symbol, tint) = ("mic.fill", .systemRed)
         case .transcribing: (symbol, tint) = ("waveform", .systemYellow)
         case .inserted:     (symbol, tint) = ("checkmark.circle.fill", .systemGreen)
         case .copied:       (symbol, tint) = ("doc.on.clipboard.fill", .systemYellow)
         case .error:        (symbol, tint) = ("exclamationmark.triangle.fill", .systemOrange)
         }
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Whisper")
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Wispr")
         image?.isTemplate = (tint == nil)
         button.image = image
         button.contentTintColor = tint
@@ -165,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             s.cancel()
             Log.log("record: start FAILED \(error)")
-            appState.phase = .error(WhisperError.mic("Microphone unavailable").userMessage)
+            appState.phase = .error(WisprError.mic("Microphone unavailable").userMessage)
             scheduleIdle(after: 2.5)
         }
     }
@@ -211,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Stream first; on a *transport* failure fall back to batch. Semantic server errors are
     /// classified (busy/backend/etc.) so the caller can buffer or surface appropriately.
-    private func runTranscription(stream: StreamingClient?, pcm: Data, t0: Date) async -> Result<String, WhisperError> {
+    private func runTranscription(stream: StreamingClient?, pcm: Data, t0: Date) async -> Result<String, WisprError> {
         if let stream {
             do {
                 let text = try await stream.finish()
@@ -219,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return text.isEmpty ? .failure(.noSpeech) : .success(text)
             } catch let e as StreamingClient.StreamError where e.isSemantic {
                 Log.log("stream: server error \(e.displayMessage) — not retrying via batch")
-                return .failure(WhisperError.from(e))
+                return .failure(WisprError.from(e))
             } catch {
                 Log.log("stream: transport failure — falling back to batch")
             }
@@ -230,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.log("batch: OK in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
             return text.isEmpty ? .failure(.noSpeech) : .success(text)
         } catch {
-            return .failure(WhisperError.from(error))
+            return .failure(WisprError.from(error))
         }
     }
 
@@ -326,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 settings: settings,
                 onHotKeyChange: { [weak self] in self?.reconfigureHotKey() },
                 setHotKeyEnabled: { [weak self] on in self?.hotKey.setEnabled(on) })
-            settingsWindow = makeWindow(title: "Whisper Settings", content: view)
+            settingsWindow = makeWindow(title: "Wispr Settings", content: view)
         }
         present(settingsWindow)
     }

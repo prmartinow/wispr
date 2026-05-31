@@ -3,14 +3,14 @@ import Carbon.HIToolbox
 
 // Carbon's hotkey handler is a bare C function pointer (no captured context); route to the
 // live instance statically. One global hotkey, so this is fine.
-private let whisperHotKeyHandler: EventHandlerUPP = { (_, eventRef, _) -> OSStatus in
+private let wisprHotKeyHandler: EventHandlerUPP = { (_, eventRef, _) -> OSStatus in
     guard let eventRef else { return noErr }
     let kind = GetEventKind(eventRef)
     DispatchQueue.main.async { HotKeyManager.shared?.handle(kind: kind) }
     return noErr
 }
 
-/// Global hotkey via Carbon `RegisterEventHotKey` — the same mechanism superwhisper and
+/// Global hotkey via Carbon `RegisterEventHotKey` — the same mechanism superwispr and
 /// Electron's globalShortcut use. Crucially it needs **no Accessibility and no Input
 /// Monitoring** (unlike a CGEventTap), works across every app/surface, and consumes the
 /// combo so it won't clash with the focused app. We register for both Pressed and Released
@@ -76,7 +76,7 @@ final class HotKeyManager {
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
         ]
-        let status = InstallEventHandler(GetApplicationEventTarget(), whisperHotKeyHandler, 2, &specs, nil, &handlerRef)
+        let status = InstallEventHandler(GetApplicationEventTarget(), wisprHotKeyHandler, 2, &specs, nil, &handlerRef)
         if status != noErr { Log.log("HotKey: InstallEventHandler FAILED status=\(status)") }
     }
 

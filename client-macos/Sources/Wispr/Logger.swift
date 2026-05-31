@@ -2,18 +2,18 @@ import Foundation
 import os
 
 /// Lightweight logger: writes to the unified log (Console.app) *and* a tail-able file at
-/// ~/Library/Logs/Whisper/whisper.log so issues (hotkey registration, permissions, request
+/// ~/Library/Logs/Wispr/wispr.log so issues (hotkey registration, permissions, request
 /// timing/errors) are diagnosable after the fact — even when launched via `open`.
 enum Log {
     static let fileURL: URL = {
         let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Logs/Whisper", isDirectory: true)
+            .appendingPathComponent("Logs/Wispr", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("whisper.log")
+        return dir.appendingPathComponent("wispr.log")
     }()
 
-    private static let oslog = os.Logger(subsystem: "xyz.p12w.whisper", category: "app")
-    private static let queue = DispatchQueue(label: "xyz.p12w.whisper.log")
+    private static let oslog = os.Logger(subsystem: "xyz.p12w.wispr", category: "app")
+    private static let queue = DispatchQueue(label: "xyz.p12w.wispr.log")
     private static let stamp: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

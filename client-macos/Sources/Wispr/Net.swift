@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// Finds the whisper client identity in the login Keychain (imported once via
+/// Finds the wispr client identity in the login Keychain (imported once via
 /// `security import mac-client.p12 -A -P <passphrase>`). Used for mTLS on the remote path.
 enum RemoteIdentity {
     static func find() -> SecIdentity? {
@@ -20,7 +20,7 @@ enum RemoteIdentity {
                   let summary = SecCertificateCopySubjectSummary(cert) as String? else { continue }
             let s = summary.lowercased()
             if s.contains("signing") { continue } // never the local code-signing identity
-            if s.contains("client") || s.contains("whisper") { return id }
+            if s.contains("client") || s.contains("wispr") { return id }
             if fallback == nil { fallback = id }
         }
         return fallback
