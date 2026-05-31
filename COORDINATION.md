@@ -26,6 +26,20 @@ Rules:
 
 ## Log
 
+### 2026-06-01 — server agent (✅ FULL rename whisper → wispr complete)
+- **Heads-up — your "leave server-internal as whisper" note is superseded:** Pierre directed the
+  **full** rename, so I renamed the git remote + units too. **But I added compat symlinks**
+  (`~/git/wispr.git`→`wispr.git` and `~/dev/whisper`→`~/dev/wispr`) so **your `origin` keeps
+  working right now** — re-point at leisure: `git remote set-url origin user@wispr.local:~/git/wispr.git`.
+- Renamed everything server-side to lowercase **wispr**: repo dir `~/dev/wispr`, systemd units
+  `wispr-*` (+ timers), `wispr-service-profile`, `wispr-mtls`, package `wispr-server`, log tags, and the
+  env key **`WHISPER_BEARER_TOKEN` → `WISPR_BEARER_TOKEN`** (token **value unchanged**). Verified: units
+  active, `/healthz` green, e2e transcribe + auth OK.
+- **VPS now serves ONLY `wispr.p12w.xyz`** (mTLS; CA file → `wispr-clients-ca.crt`); the
+  `whisper.p12w.xyz` vhost is **dropped** (you confirmed cutover). Client cert unchanged (hostname-independent).
+- Remaining `whisper` strings are legit/non-issues: the **Whisper STT model** ref in `contract` (a real
+  product name), `scripts/contract-test.sh` env vars + your `client-macos/*` (yours), and COORDINATION history.
+
 ### 2026-06-01 — mac agent (✅ cut over to wispr.p12w.xyz; lowercase brand)
 - Confirmed `https://wispr.p12w.xyz` over mTLS (200) — **client remote default is now wispr**. You can
   **drop the `whisper.p12w.xyz` vhost** whenever; nothing on my side uses it anymore.

@@ -1,5 +1,5 @@
 'use strict';
-// whisper transcription service — implements contract/transcribe.md.
+// wispr transcription service — implements contract/transcribe.md.
 // Backend is pluggable: transcribe() returns stub text now; swap it for the
 // dictation service web-dictation driver later without touching routing/auth. Zero deps.
 
@@ -22,14 +22,14 @@ function loadEnv(p) {
   return out;
 }
 const env = loadEnv(path.join(__dirname, '.env'));
-const TOKEN = process.env.WHISPER_BEARER_TOKEN || env.WHISPER_BEARER_TOKEN || '';
+const TOKEN = process.env.WISPR_BEARER_TOKEN || env.WISPR_BEARER_TOKEN || '';
 const PORT = Number(process.env.PORT || env.PORT || 8080);
 const HOST = '0.0.0.0'; // both LAN subnets (wispr.local and wispr.local)
 const ENGINE = 'dictation-service';
 const DEVTOOLS = 'http://127.0.0.1:9223/json/version'; // the dedicated dictation service service browser
 
 if (!TOKEN) {
-  console.error('[whisper-server] refusing to start: no WHISPER_BEARER_TOKEN (server/.env)');
+  console.error('[wispr-server] refusing to start: no WISPR_BEARER_TOKEN (server/.env)');
   process.exit(1);
 }
 
@@ -201,5 +201,5 @@ function handleStream(ws) {
 }
 
 server.listen(PORT, HOST, () => {
-  console.log(`[whisper-server] engine=${ENGINE} listening on ${HOST}:${PORT} (POST /transcribe + WS /v1/stream)`);
+  console.log(`[wispr-server] engine=${ENGINE} listening on ${HOST}:${PORT} (POST /transcribe + WS /v1/stream)`);
 });
