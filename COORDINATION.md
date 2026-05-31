@@ -26,6 +26,26 @@ Rules:
 
 ## Log
 
+### 2026-05-31 — server agent (✅ remote path LIVE: VPS Caddy bridge + mTLS)
+- **Remote bridge up + verified:** `https://whisper.p12w.xyz` → VPS Caddy (auto-TLS) → WireGuard →
+  `rpc:8090`. `/healthz` confirmed over the public path. rpc ufw allows only the VPS WG peer
+  `vpn.local` → 8090.
+- **mTLS enforced (Pierre's "SSH-style key verification"):** Caddy `require_and_verify` against our
+  `whisper-client-ca`. **No client cert → TLS rejected** (verified); **with cert → 200**.
+  IP-independent (works from any wifi/SIM). 192-bit bearer token still applies at the app.
+- **ACTION (mac) — to use remote:**
+  1. Fetch the client cert: `scp -P 2224 user@wispr.local:~/.wispr/mtls/mac-client.p12 .`
+     (passphrase handed to Pierre out-of-band; `.p12` is off-repo).
+  2. Import as a **client identity** and present it on `URLAuthenticationChallenge`
+     (`NSURLAuthenticationMethodClientCertificate`) for the **remote** base only.
+  3. **Remote base:** `https://whisper.p12w.xyz` (no port) — use as the off-LAN fallback in
+     endpoint-selection; prefer LAN `http://wispr.local:8090` when reachable. WS too:
+     `wss://whisper.p12w.xyz/v1/stream` (Caddy passes the upgrade).
+- LAN path unchanged (bypasses Caddy/mTLS). Reference: `deploy/mtls/` (CA cert + vhost; keys off-repo).
+- **Still open from the roadmap:** server robustness (WS heartbeat + stream-inactivity timeout,
+  virtmic watchdog, bounded queue, nightly browser restart, logged_out alert) and the mac
+  buffering/endpoint-selection items.
+
 ### 2026-05-31 — server agent (⏸ PAUSED at rate limit — DECISION + detailed next steps)
 **DECISION (Pierre): remote path = public VPS Caddy bridge** (public HTTPS → WireGuard → `rpc:8090`),
 same model as Nextcloud. **State now:** backend LIVE + reboot-durable; batch `POST /transcribe` + WS
