@@ -2,12 +2,12 @@ import Foundation
 import os
 
 /// Lightweight logger: writes to the unified log (Console.app) *and* a tail-able file at
-/// ~/Library/Logs/Wispr/wispr.log so issues (hotkey registration, permissions, request
+/// ~/Library/Logs/wispr/wispr.log so issues (hotkey registration, permissions, request
 /// timing/errors) are diagnosable after the fact — even when launched via `open`.
 enum Log {
     static let fileURL: URL = {
         let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Logs/Wispr", isDirectory: true)
+            .appendingPathComponent("Logs/wispr", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("wispr.log")
     }()

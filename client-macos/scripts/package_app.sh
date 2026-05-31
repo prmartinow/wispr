@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Build the SPM executable and wrap it in a proper Wispr.app bundle (Info.plist for TCC + icon).
+# Build the SPM executable and wrap it in a proper wispr.app bundle (Info.plist for TCC + icon).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
 swift build -c "$CONFIG"
-BIN=".build/$CONFIG/Wispr"
-APP="Wispr.app"
+BIN=".build/$CONFIG/wispr"
+APP="wispr.app"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/Wispr"
+cp "$BIN" "$APP/Contents/MacOS/wispr"
 [ -f assets/AppIcon.icns ] && cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -18,18 +18,18 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Wispr</string>
-  <key>CFBundleDisplayName</key><string>Wispr</string>
+  <key>CFBundleName</key><string>wispr</string>
+  <key>CFBundleDisplayName</key><string>wispr</string>
   <key>CFBundleIdentifier</key><string>xyz.p12w.wispr</string>
   <key>CFBundleVersion</key><string>0.1</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
-  <key>CFBundleExecutable</key><string>Wispr</string>
+  <key>CFBundleExecutable</key><string>wispr</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Wispr records your voice so it can be transcribed by your dictation server.</string>
+  <string>wispr records your voice so it can be transcribed by your dictation server.</string>
 </dict>
 </plist>
 PLIST
@@ -54,5 +54,5 @@ fi
 echo "Built $APP"
 echo "Run:   open ./$APP   (server defaults to :8090; configure in Settings, or seed once via"
 echo "       WHISPER_SERVER_URL / WHISPER_TOKEN env on first launch — token goes to Keychain)"
-echo "Logs:  ~/Library/Logs/Wispr/wispr.log  (or menu → Reveal Log in Finder)"
+echo "Logs:  ~/Library/Logs/wispr/wispr.log  (or menu → Reveal Log in Finder)"
 echo "Grant Microphone + Accessibility when prompted (Accessibility = global hotkey + paste)."

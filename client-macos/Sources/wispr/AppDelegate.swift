@@ -92,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Reveal Log in Finder", action: #selector(revealLog), keyEquivalent: ""))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Wispr", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit wispr", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
         updateToggleTitle()
     }
@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .copied:       (symbol, tint) = ("doc.on.clipboard.fill", .systemYellow)
         case .error:        (symbol, tint) = ("exclamationmark.triangle.fill", .systemOrange)
         }
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Wispr")
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "wispr")
         image?.isTemplate = (tint == nil)
         button.image = image
         button.contentTintColor = tint
@@ -326,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 settings: settings,
                 onHotKeyChange: { [weak self] in self?.reconfigureHotKey() },
                 setHotKeyEnabled: { [weak self] on in self?.hotKey.setEnabled(on) })
-            settingsWindow = makeWindow(title: "Wispr Settings", content: view)
+            settingsWindow = makeWindow(title: "wispr Settings", content: view)
         }
         present(settingsWindow)
     }
