@@ -13,15 +13,17 @@ enum RemoteIdentity {
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let identities = result as? [SecIdentity] else { return nil }
+        var fallback: SecIdentity?
         for id in identities {
             var certRef: SecCertificate?
-            if SecIdentityCopyCertificate(id, &certRef) == errSecSuccess, let cert = certRef,
-               let summary = SecCertificateCopySubjectSummary(cert) as String?,
-               summary.lowercased().contains("whisper") {
-                return id
-            }
+            guard SecIdentityCopyCertificate(id, &certRef) == errSecSuccess, let cert = certRef,
+                  let summary = SecCertificateCopySubjectSummary(cert) as String? else { continue }
+            let s = summary.lowercased()
+            if s.contains("signing") { continue } // never the local code-signing identity
+            if s.contains("client") || s.contains("whisper") { return id }
+            if fallback == nil { fallback = id }
         }
-        return identities.first
+        return fallback
     }
 }
 
