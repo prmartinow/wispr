@@ -27,9 +27,9 @@ for the server agent. Update via commit + a `../COORDINATION.md` note.
 
 ## Client robustness model (this app)
 - **Never lose audio.** Every take is captured to PCM in memory; on a *retryable* failure the WAV is
-  written to `~/Library/Application Support/whisper/pending/` and retried later (manually or when
+  written to `~/Library/Application Support/wispr/pending/` and retried later (manually or when
   `/healthz` recovers). Retried transcripts go to **History + clipboard + a HUD note** (focus has moved).
-- **Classified errors** (`WhisperError`): every failure maps to a category with a user message and a
+- **Classified errors** (`WisprError`): every failure maps to a category with a user message and a
   `retryable` flag, so the HUD/menu say something actionable instead of a stack trace.
 - **Health awareness.** `HealthMonitor` polls `/healthz` (~25 s + on demand); the HUD status dot and
   menu reflect up / unreachable / backend-down, and recovery kicks off pending retries.

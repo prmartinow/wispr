@@ -7,14 +7,14 @@ home server → pastes the returned text into the focused app. Builds against
 ## Build & run
 ```sh
 cd client-macos
-./scripts/package_app.sh        # -> Whisper.app (Info.plist for mic TCC + ad-hoc sign)
-open ./Whisper.app              # configure server/token in Settings (gear), or seed via env:
-# WHISPER_SERVER_URL=http://wispr.local:8090 \
-# WHISPER_TOKEN="$(ssh -p 2224 user@wispr.local 'sed -n s/^WHISPER_BEARER_TOKEN=//p ~/dev/whisper/server/.env')" \
-#   open ./Whisper.app
+./scripts/package_app.sh        # -> wispr.app (Info.plist for mic TCC + ad-hoc sign)
+open ./wispr.app              # configure server/token in Settings (gear), or seed via env:
+# WISPR_SERVER_URL=http://wispr.local:8090 \
+# WISPR_TOKEN="$(ssh -p 2224 user@wispr.local 'sed -n s/^WHISPER_BEARER_TOKEN=//p ~/dev/whisper/server/.env')" \
+#   open ./wispr.app
 ```
 Server URL defaults to `http://wispr.local:8090`. The token is stored in the **Keychain**
-(seeded once from `WHISPER_TOKEN` if set).
+(seeded once from `WISPR_TOKEN` if set).
 
 ## GUI
 - **Floating HUD pill** (bottom-center, always-on-top, non-activating so it never steals focus):
@@ -32,7 +32,7 @@ Server URL defaults to `http://wispr.local:8090`. The token is stored in the **K
 
 ## Permissions (first run)
 - **Microphone** — prompted on first record (`NSMicrophoneUsageDescription` in the bundle).
-- **Accessibility** — System Settings ▸ Privacy & Security ▸ Accessibility, enable `Whisper`
+- **Accessibility** — System Settings ▸ Privacy & Security ▸ Accessibility, enable `wispr`
   (needed for the **global hotkey** monitor and to synthesize ⌘V into other apps).
 
 ## Files

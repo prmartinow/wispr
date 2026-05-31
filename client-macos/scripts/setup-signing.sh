@@ -7,9 +7,9 @@
 # Self-signed and local-only. The keychain password below guards nothing but this dev cert,
 # so it's intentionally not a secret. Idempotent: safe to re-run.
 set -euo pipefail
-CN="Whisper Local Signing"
-PW="whisper-local"
-KC="$HOME/Library/Keychains/whisper-signing.keychain-db"
+CN="wispr Local Signing"
+PW="wispr-local"
+KC="$HOME/Library/Keychains/wispr-signing.keychain-db"
 
 if security find-certificate -c "$CN" "$KC" >/dev/null 2>&1; then
   echo "signing identity already present: $CN"

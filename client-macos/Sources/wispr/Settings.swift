@@ -14,7 +14,7 @@ enum ActivationMode: String, CaseIterable, Identifiable {
 }
 
 /// Persisted user settings. Scalars live in UserDefaults; the bearer token lives in the
-/// Keychain. Initial values fall back to env vars (WHISPER_SERVER_URL / WHISPER_TOKEN)
+/// Keychain. Initial values fall back to env vars (WISPR_SERVER_URL / WISPR_TOKEN)
 /// then to the LAN defaults, so the app works out of the box and is configurable in the UI.
 final class Settings: ObservableObject {
     private let d = UserDefaults.standard
@@ -41,9 +41,9 @@ final class Settings: ObservableObject {
     init() {
         let env = ProcessInfo.processInfo.environment
         let initialServer = d.string(forKey: K.serverURL)
-            ?? env["WHISPER_SERVER_URL"] ?? "http://wispr.local:8090"
+            ?? env["WISPR_SERVER_URL"] ?? "http://wispr.local:8090"
         serverURLString = initialServer
-        remoteURLString = d.string(forKey: K.remoteURL) ?? env["WHISPER_REMOTE_URL"] ?? "https://wispr.p12w.xyz"
+        remoteURLString = d.string(forKey: K.remoteURL) ?? env["WISPR_REMOTE_URL"] ?? "https://wispr.p12w.xyz"
         activeServerURL = URL(string: initialServer) ?? URL(string: "http://wispr.local:8090")!
         activation = ActivationMode(rawValue: d.string(forKey: K.activation) ?? "") ?? .toggle
         // Default ⌘⇧1: ⌘⌥Space collides with Finder's "Search This Mac"; ⌘⇧1/2 are unbound
@@ -54,7 +54,7 @@ final class Settings: ObservableObject {
         inputDeviceUID = d.string(forKey: K.inputUID)
 
         // Seed the Keychain token from the env on first run if empty.
-        if token.isEmpty, let t = env["WHISPER_TOKEN"], !t.isEmpty { token = t }
+        if token.isEmpty, let t = env["WISPR_TOKEN"], !t.isEmpty { token = t }
     }
 
     var serverURL: URL {

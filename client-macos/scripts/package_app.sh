@@ -35,13 +35,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 # Stable local code-signing identity so Accessibility/Mic grants survive rebuilds. The signing
-# keychain is intentionally still named "whisper-signing" (internal, invisible) — renaming it
+# keychain is intentionally still named "wispr-signing" (internal, invisible) — renaming it
 # would force re-creating the cert and an extra re-grant for no user benefit.
-SIGN_CN="Whisper Local Signing"
-SIGN_KC="$HOME/Library/Keychains/whisper-signing.keychain-db"
+SIGN_CN="wispr Local Signing"
+SIGN_KC="$HOME/Library/Keychains/wispr-signing.keychain-db"
 "$(dirname "$0")/setup-signing.sh" >/dev/null 2>&1 || true
 if security find-certificate -c "$SIGN_CN" "$SIGN_KC" >/dev/null 2>&1; then
-  security unlock-keychain -p whisper-local "$SIGN_KC" 2>/dev/null || true
+  security unlock-keychain -p wispr-local "$SIGN_KC" 2>/dev/null || true
   if codesign --force --sign "$SIGN_CN" --keychain "$SIGN_KC" "$APP" >/dev/null 2>&1; then
     echo "signed with stable identity '$SIGN_CN' — TCC grants persist across rebuilds"
   else
@@ -53,6 +53,6 @@ fi
 
 echo "Built $APP"
 echo "Run:   open ./$APP   (server defaults to :8090; configure in Settings, or seed once via"
-echo "       WHISPER_SERVER_URL / WHISPER_TOKEN env on first launch — token goes to Keychain)"
+echo "       WISPR_SERVER_URL / WISPR_TOKEN env on first launch — token goes to Keychain)"
 echo "Logs:  ~/Library/Logs/wispr/wispr.log  (or menu → Reveal Log in Finder)"
 echo "Grant Microphone + Accessibility when prompted (Accessibility = global hotkey + paste)."
