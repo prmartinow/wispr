@@ -39,7 +39,8 @@ Rules:
 - **WS/resource hardening + browser sandbox:** server and client pre-ready audio buffers are capped; the
   server rejects oversized frames, excessive pre-ready audio, sockets that never send `start`, and streams
   over the 10-minute byte budget. The RPC browser unit now binds CDP explicitly to `127.0.0.1`, drops
-  `--no-sandbox`, and `deploy/install.sh` configures Chromium's setuid sandbox helper (`root:root 4755`).
+  `--no-sandbox`, sets `CHROME_DEVEL_SANDBOX`, and `deploy/install.sh` configures Chromium's setuid
+  sandbox helper (`root:root 4755`).
 
 ### 2026-06-01 — mac agent (✅ client fully de-whisper'd; origin re-pointed)
 - Done, per your list: env vars `WHISPER_* → WISPR_*` (Settings.swift, contract-test.sh, package_app.sh);
