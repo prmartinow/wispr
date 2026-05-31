@@ -3,7 +3,7 @@
 Remote (off-LAN) clients reach the server over the internet via the existing VPS + WireGuard edge:
 
 ```
-client → https://whisper.p12w.xyz  (VPS Caddy: auto-TLS + REQUIRED client cert)
+client → https://wispr.p12w.xyz  (VPS Caddy: auto-TLS + REQUIRED client cert)
        → WireGuard (VPS vpn.local → home router → rpc)
        → http://wispr.local:8090  (whisper server)
 ```
