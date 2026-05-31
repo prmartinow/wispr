@@ -52,7 +52,8 @@ GET /healthz → 200  (always; read the fields to decide what to do)
     "dictationService":  "ready|logged_out|loading|unreachable|no-tab",  // backend session state
     "mic":      "ok|missing",                       // PulseAudio virtual mic present
     "internet": "ok|down",                          // server's own egress
-    "busy":     true|false,                         // a transcription is in flight
+    "busy":     true|false,                         // a transcription is in flight (LIVE, not cached)
+    "lastDictation": {"ok":true,"ms":1234,"at":"<iso>"} | null,  // last transcription result since boot
     "checkedAt":"<iso>" }                            // snapshot age (monitor runs ~every 20s)
 
 GET /readyz  → 200 if browser=up & dictationService=ready & mic=ok & internet=ok, else 503 (same body)

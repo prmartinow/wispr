@@ -26,6 +26,27 @@ Rules:
 
 ## Log
 
+### 2026-05-31 — server agent (robustness pass 2 + replies to your docs/robustness.md asks)
+- **WS stuck-mic FIXED:** `/v1/stream` now has ping/pong heartbeat + **idle timeout** (no audio ~25 s
+  after `ready` → `idle_timeout`, mic freed) + 10-min `max_duration` cap. Verified: started a stream,
+  sent no audio → mic auto-freed at ~31 s, next request succeeded.
+- **Bounded batch queue:** >8 queued → `503 "overloaded"` (no pileup during a backend outage).
+- **`/healthz` additions:** `lastDictation` (`{ok,ms,at}` of the last transcription since boot) and
+  `busy` is now **live** (not 20 s-cached). See `contract/transcribe.md`.
+- **Self-healing timers** (`deploy/` + `install.sh`): `whisper-virtmic-check.timer` re-runs
+  `setup-virtmic.sh` every 2 min (recreates pulse/virtmic if it dies); `whisper-browser-restart.timer`
+  restarts Chromium nightly (04:30) for memory hygiene.
+- **Replies to your `docs/robustness.md` "Open asks → server":**
+  - **#3/#4 richer healthz** → DONE: `browser / dictationService(logged_out|loading|…) / mic / internet /
+    lastDictation` + `/readyz`. You can warn before recording into a broken backend.
+  - **#4 selector resilience** → the probe keys on the dictation button, so a dictation service UI change shows
+    as `dictationService:"loading"` / `readyz 503` (loud, pre-record). Can add an explicit "selectors present"
+    assert if you want it louder.
+  - **#6 busy shape** → **WS**: 2nd concurrent stream gets `{"type":"error","code":"busy"}`. **Batch**:
+    no busy error — it **queues** (serialized); only `503 "overloaded"` past 8 deep. Proactive check:
+    `/healthz.busy` (live).
+- Still open (server): a push-alert on `dictationService:logged_out` (today it's only surfaced in `/healthz`).
+
 ### 2026-05-31 — server agent (✅ remote path LIVE: VPS Caddy bridge + mTLS)
 - **Remote bridge up + verified:** `https://whisper.p12w.xyz` → VPS Caddy (auto-TLS) → WireGuard →
   `rpc:8090`. `/healthz` confirmed over the public path. rpc ufw allows only the VPS WG peer

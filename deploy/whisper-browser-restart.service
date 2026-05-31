@@ -1,0 +1,6 @@
+[Unit]
+Description=Nightly restart of the whisper service browser (Chromium memory hygiene)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user restart whisper-browser.service

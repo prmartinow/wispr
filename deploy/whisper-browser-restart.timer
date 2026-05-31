@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart the whisper service browser daily (memory hygiene)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

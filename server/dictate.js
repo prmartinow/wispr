@@ -15,11 +15,23 @@ const SINK = process.env.DICTATE_SINK || 'virtmic';
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// --- single-flight mutex (one composer + one mic) ---------------------------
+// --- single-flight mutex (one composer + one mic), bounded queue ------------
+const MAX_QUEUE = 8;
 let _busy = false; const _q = [];
-function acquire() { return new Promise(res => { const t = () => { _busy = true; res(); }; _busy ? _q.push(t) : t(); }); }
+function acquire() {
+  return new Promise((res, rej) => {
+    if (_busy && _q.length >= MAX_QUEUE) { rej(Object.assign(new Error('server overloaded; try again shortly'), { code: 'overloaded' })); return; }
+    const t = () => { _busy = true; res(); };
+    _busy ? _q.push(t) : t();
+  });
+}
 function tryAcquire() { if (_busy) return false; _busy = true; return true; }
 function release() { _busy = false; const n = _q.shift(); if (n) n(); }
+
+// --- last-dictation result (surfaced in /healthz as lastDictation) ----------
+let _last = null;
+function recordResult(ok, ms, error) { _last = { ok, ms, at: new Date().toISOString(), ...(error ? { error } : {}) }; }
+function lastResult() { return _last; }
 
 // --- browser page (reused; reconnects if dropped) ---------------------------
 let _browser = null, _page = null;
@@ -78,13 +90,17 @@ async function transcribe(audioBuffer) {
   await acquire();
   const tmp = path.join(os.tmpdir(), `dictate-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
   fs.writeFileSync(tmp, audioBuffer);
+  const t0 = Date.now();
   try {
     const page = await getPage();
     await startDictation(page);
     await playWavFile(tmp);
     await sleep(1200);
-    return await submitAndScrape(page);
-  } finally { fs.unlink(tmp, () => {}); release(); }
+    const text = await submitAndScrape(page);
+    recordResult(!!(text && text.length), Date.now() - t0, text ? undefined : 'empty transcript');
+    return text;
+  } catch (e) { recordResult(false, Date.now() - t0, e.message); throw e; }
+  finally { fs.unlink(tmp, () => {}); release(); }
 }
 
 // --- streaming mode ---------------------------------------------------------
@@ -106,8 +122,10 @@ async function stopStream(s) {
       s.pacat.on('close', fin); try { s.pacat.stdin.end(); } catch (_) { fin(); } setTimeout(fin, 8000); });
     await sleep(2000); // dictation service finishes transcribing the tail still in the pulse buffer
     const text = await submitAndScrape(s.page);
+    recordResult(!!(text && text.length), Date.now() - s.t0, text ? undefined : 'empty transcript');
     return { text, duration_ms: Date.now() - s.t0 };
-  } finally { try { s.pacat.kill(); } catch (_) {} release(); }
+  } catch (e) { recordResult(false, Date.now() - s.t0, e.message); throw e; }
+  finally { try { s.pacat.kill(); } catch (_) {} release(); }
 }
 async function abortStream(s) {
   try { s.pacat.kill(); } catch (_) {}
@@ -135,7 +153,7 @@ async function probe() {
   } finally { try { await b.close(); } catch (_) {} }
 }
 
-module.exports = { transcribe, startStream, pushAudio, stopStream, abortStream, probe, isBusy };
+module.exports = { transcribe, startStream, pushAudio, stopStream, abortStream, probe, isBusy, lastResult };
 
 if (require.main === module) {
   const wav = process.argv[2];

@@ -47,7 +47,7 @@ function bearerOk(req) {
 }
 
 // --- health monitor: a cached snapshot so /healthz is instant and never disturbs dictation ---
-let _health = { ok: true, engine: ENGINE, browser: 'unknown', dictationService: 'unknown', mic: 'unknown', internet: 'unknown', busy: false, checkedAt: null };
+let _health = { ok: true, engine: ENGINE, browser: 'unknown', dictationService: 'unknown', mic: 'unknown', internet: 'unknown', busy: false, lastDictation: null, checkedAt: null };
 
 function micOk() {
   return new Promise(resolve => {
@@ -70,7 +70,7 @@ async function refreshHealth() {
   let browser = 'up', dictationService = 'ready';
   if (!busy) { const p = await dictate.probe(); browser = p.browser; dictationService = p.dictationService; }
   const [mic, net] = await Promise.all([micOk(), internetOk()]);
-  _health = { ok: true, engine: ENGINE, browser, dictationService, mic: mic ? 'ok' : 'missing', internet: net ? 'ok' : 'down', busy, checkedAt: new Date().toISOString() };
+  _health = { ok: true, engine: ENGINE, browser, dictationService, mic: mic ? 'ok' : 'missing', internet: net ? 'ok' : 'down', busy, lastDictation: dictate.lastResult(), checkedAt: new Date().toISOString() };
 }
 setInterval(() => refreshHealth().catch(() => {}), 20000);
 refreshHealth().catch(() => {});
@@ -116,7 +116,7 @@ const server = http.createServer(async (req, res) => {
     const url = req.url.split('?')[0];
 
     if (req.method === 'GET' && url === '/healthz') {
-      return sendJson(res, 200, _health);
+      return sendJson(res, 200, { ..._health, busy: dictate.isBusy() }); // busy live; rest cached
     }
     if (req.method === 'GET' && url === '/readyz') {
       const ready = _health.browser === 'up' && _health.dictationService === 'ready' && _health.mic === 'ok' && _health.internet === 'ok';
@@ -135,7 +135,7 @@ const server = http.createServer(async (req, res) => {
       const t0 = Date.now();
       let text;
       try { text = await transcribe(audio); }
-      catch (e) { return sendErr(res, 503, 'backend_unavailable', 'dictation backend error: ' + (e.message || e)); }
+      catch (e) { return sendErr(res, 503, e.code || 'backend_unavailable', String(e.message || e)); }
       if (!text) return sendErr(res, 504, 'transcription_timeout', 'dictation produced no text');
       return sendJson(res, 200, { text, engine: ENGINE, duration_ms: Date.now() - t0 });
     }
@@ -147,6 +147,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 // --- WebSocket /v1/stream: live PCM dictation (start -> binary PCM -> stop -> final) ---------
+const HEARTBEAT_MS = 10000;   // ws ping cadence; a missed pong terminates the socket
+const STREAM_IDLE_MS = 25000; // a started stream with no audio this long -> free the mic
+const STREAM_MAX_MS = 600000; // hard cap on one stream (10 min) -> free the mic
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   if (req.url.split('?')[0] !== '/v1/stream') { socket.destroy(); return; }
@@ -155,14 +158,22 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 function handleStream(ws) {
-  let startP = null, session = null, stopped = false;
+  let startP = null, session = null, stopped = false, lastActivity = Date.now(), startedAt = 0, alive = true;
   const pre = []; // binary frames that arrive before the session is ready -> flushed on ready
   const send = obj => { try { ws.send(JSON.stringify(obj)); } catch (_) {} };
+  const abort = async (code, message) => {
+    if (session) { const s = session; session = null; await dictate.abortStream(s).catch(() => {}); }
+    if (code) send({ type: 'error', code, message });
+    try { ws.close(); } catch (_) {}
+  };
+  ws.on('pong', () => { alive = true; });
   ws.on('message', async (data, isBinary) => {
+    lastActivity = Date.now();
     if (isBinary) { if (session) dictate.pushAudio(session, data); else pre.push(data); return; }
     let msg; try { msg = JSON.parse(data.toString()); } catch (_) { return; }
     if (msg.type === 'start') {
       if (startP) return;                          // extra start fields (format/lang) are ignored
+      startedAt = Date.now();
       startP = dictate.startStream();
       try { session = await startP; for (const b of pre.splice(0)) dictate.pushAudio(session, b); send({ type: 'ready' }); }
       catch (e) { send({ type: 'error', code: e.code || 'backend_unavailable', message: String(e.message || e) }); try { ws.close(); } catch (_) {} }
@@ -176,7 +187,16 @@ function handleStream(ws) {
       try { ws.close(); } catch (_) {}
     }
   });
-  ws.on('close', () => { if (session) { const s = session; session = null; dictate.abortStream(s).catch(() => {}); } });
+  // watchdog: dead-TCP detection (ping/pong) + free the mic if a started stream goes silent or runs away
+  const wd = setInterval(() => {
+    if (!alive) { try { ws.terminate(); } catch (_) {} return; }   // -> 'close' -> abortStream frees the mic
+    alive = false; try { ws.ping(); } catch (_) {}
+    if (session && !stopped) {
+      if (Date.now() - lastActivity > STREAM_IDLE_MS) abort('idle_timeout', 'no audio received; freeing the mic');
+      else if (startedAt && Date.now() - startedAt > STREAM_MAX_MS) abort('max_duration', 'stream exceeded max duration');
+    }
+  }, HEARTBEAT_MS);
+  ws.on('close', () => { clearInterval(wd); if (session) { const s = session; session = null; dictate.abortStream(s).catch(() => {}); } });
   ws.on('error', () => {});
 }
 

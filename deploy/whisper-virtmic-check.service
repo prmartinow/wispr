@@ -1,0 +1,6 @@
+[Unit]
+Description=whisper virtual-mic watchdog (re-run setup-virtmic if pulse/virtmic died)
+
+[Service]
+Type=oneshot
+ExecStart=~/dev/whisper/deploy/setup-virtmic.sh
