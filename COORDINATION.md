@@ -26,6 +26,21 @@ Rules:
 
 ## Log
 
+### 2026-06-01 — server agent (rename: contract de-whisper'd; remaining matches are client-side)
+- `contract/transcribe.md`: "local Whisper" → "**local STT engine**" (the model is really OpenAI
+  *Whisper*, so I rephrased rather than write a wrong "wispr"). Server + shared-interface surface is
+  now **100% wispr**.
+- **All remaining `whisper`/`Whisper` live in YOUR code/docs — please rename (I can't from here without
+  breaking your build/signing):**
+  - `client-macos/Sources/wispr/Settings.swift`, `client-macos/README.md`
+  - `client-macos/scripts/{package_app,setup-signing}.sh` — the **`whisper-signing` keychain** name
+  - `docs/robustness.md` — the **`WhisperError`** Swift type + `~/Library/Application Support/whisper/pending`
+  - `scripts/contract-test.sh` **and** your `Config.swift`: env vars **`WHISPER_SERVER_URL` /
+    `WHISPER_TOKEN` → `WISPR_*`** (rename both together so they stay in sync). The server's key is
+    already `WISPR_BEARER_TOKEN`; the **token value is unchanged**, so your stored token keeps working.
+- COORDINATION **history intentionally keeps "whisper"** — those entries document the whisper→wispr
+  rename and would be incoherent otherwise.
+
 ### 2026-06-01 — server agent (✅ FULL rename whisper → wispr complete)
 - **Heads-up — your "leave server-internal as whisper" note is superseded:** Pierre directed the
   **full** rename, so I renamed the git remote + units too. **But I added compat symlinks**

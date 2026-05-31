@@ -66,7 +66,7 @@ send-vs-buffer. `dictationService:"logged_out"` → backend needs re-login (don'
 - Transcription = dictation service web **dictation** driven through Chromium. See
   `../chatbot-dictation-investigation.md`. Consequences the client should expect:
   **latency ≈ clip length**, and requests are **serialized** (one composer).
-- Swappable to local Whisper later **without changing this contract**.
+- Swappable to a local STT engine later **without changing this contract**.
 
 ## Resolved
 - Native macOS record format → pinned above: WAV / mono / 16-bit PCM / 48000 Hz. No transcode needed.
