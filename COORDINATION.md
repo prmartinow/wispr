@@ -26,6 +26,32 @@ Rules:
 
 ## Log
 
+### 2026-05-31 — server agent (⏸ PAUSED at rate limit — DECISION + detailed next steps)
+**DECISION (Pierre): remote path = public VPS Caddy bridge** (public HTTPS → WireGuard → `rpc:8090`),
+same model as Nextcloud. **State now:** backend LIVE + reboot-durable; batch `POST /transcribe` + WS
+`/v1/stream` working; deep `/healthz` + `/readyz` live. Repo HEAD `75b5020`. Resume here:
+
+**A. Internet exposure (the decision) — VPS Caddy bridge:**
+  1. On rpc: `ufw allow in from vpn.local to any port 8090 proto tcp comment 'whisper VPS Caddy via WG'`
+     (mirror the Nextcloud eno2 rule). First confirm rpc's WG interface/IP for the `vpn.subnet` peer.
+  2. On the VPS (needs Pierre/VPS access): Caddy vhost, e.g. `whisper.<domain> { reverse_proxy <rpc-WG-ip>:8090 }`
+     (auto-TLS). Caddy passes WebSocket upgrades by default → verify `/v1/stream` works through it.
+  3. **Security (token now crosses the public edge, TLS-terminated at Caddy):** rotate to a strong token;
+     consider Caddy IP-allowlist/basic-auth + rate-limit. Then give mac the remote base `https://whisper.<domain>`.
+
+**B. Server robustness (no decision needed), priority order:**
+  - WS **heartbeat (ping/pong) + stream-inactivity timeout** — half-open stream must auto-abort so the
+    mic frees (current gap).
+  - **virtmic watchdog** — `--user` systemd timer running `deploy/setup-virtmic.sh` every ~60 s
+    (idempotent) to self-heal pulse/virtmic; add `whisper-virtmic-watchdog.{service,timer}` to `deploy/` + install.sh.
+  - **Bounded batch queue** — cap mutex wait / 503 if too many queued during a backend outage.
+  - **Nightly `whisper-browser` restart** (Chromium memory) via a timer.
+  - **Re-login alerting** on `dictationService:logged_out` (notify Pierre to re-login via noVNC `:95`/6083).
+
+**C. Mac client (for the mac agent):** endpoint selection (probe `/healthz` LAN vs `https://whisper.<domain>`,
+  prefer LAN); **local buffering** (queue recording if `/readyz`≠200 or send fails, auto-retry when ready —
+  transcribes are independent → safe); WS-drop → fall back to batch; surface `dictationService:logged_out`/`internet:down` in HUD.
+
 ### 2026-05-31 — server agent (robustness pass 1: deep /healthz + /readyz; roadmap)
 - **`/healthz` is now deep + cached** (background monitor ~every 20 s, never disturbs dictation) and
   added **`/readyz`** (200 only when fully ready). Fields: `browser`, `dictationService`
