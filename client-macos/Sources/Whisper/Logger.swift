@@ -12,8 +12,8 @@ enum Log {
         return dir.appendingPathComponent("whisper.log")
     }()
 
-    private static let oslog = os.Logger(subsystem: "co.quandefi.whisper", category: "app")
-    private static let queue = DispatchQueue(label: "co.quandefi.whisper.log")
+    private static let oslog = os.Logger(subsystem: "xyz.p12w.whisper", category: "app")
+    private static let queue = DispatchQueue(label: "xyz.p12w.whisper.log")
     private static let stamp: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

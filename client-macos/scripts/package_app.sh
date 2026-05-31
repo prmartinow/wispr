@@ -21,7 +21,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
   <key>CFBundleName</key><string>Whisper</string>
   <key>CFBundleDisplayName</key><string>Whisper</string>
-  <key>CFBundleIdentifier</key><string>co.quandefi.whisper</string>
+  <key>CFBundleIdentifier</key><string>xyz.p12w.whisper</string>
   <key>CFBundleVersion</key><string>0.1</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundleExecutable</key><string>Whisper</string>

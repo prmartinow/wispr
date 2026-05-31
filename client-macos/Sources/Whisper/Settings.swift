@@ -77,7 +77,7 @@ final class Settings: ObservableObject {
 }
 
 enum Keychain {
-    private static let service = "co.quandefi.whisper"
+    private static let service = "xyz.p12w.whisper"
 
     static func set(_ value: String, account: String) {
         let base: [String: Any] = [
