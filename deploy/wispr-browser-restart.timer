@@ -1,5 +1,5 @@
 [Unit]
-Description=Restart the whisper service browser daily (memory hygiene)
+Description=Restart the wispr service browser daily (memory hygiene)
 
 [Timer]
 OnCalendar=*-*-* 04:30:00

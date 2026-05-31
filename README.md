@@ -1,4 +1,4 @@
-# whisper — LAN voice dictation (macOS → home server → text)
+# wispr — LAN voice dictation (macOS → home server → text)
 
 Voice clips recorded on macOS are sent over the LAN to this home server, transcribed via the
 dictation service web **dictation** feature driven through Chromium, and returned as text the client inserts
@@ -21,10 +21,10 @@ into the focused app. Android client comes later — same server, same contract.
 
 ## Connect — macOS client agent, do this first
 ```bash
-git clone user@wispr.local:~/git/wispr.git whisper
-cd whisper
+git clone user@wispr.local:~/git/wispr.git wispr
+cd wispr
 cat contract/transcribe.md COORDINATION.md      # read the interface
-ssh user@wispr.local 'cat ~/dev/whisper/server/.env'   # bearer token (never committed)
+ssh user@wispr.local 'cat ~/dev/wispr/server/.env'   # bearer token (never committed)
 ```
 Server endpoint: `http://wispr.local:8090` (also `wispr.local` on the other subnet).
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the whisper virtual-mic watchdog every 2 minutes
+Description=Run the wispr virtual-mic watchdog every 2 minutes
 
 [Timer]
 OnBootSec=2min

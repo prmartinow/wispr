@@ -1,5 +1,5 @@
 {
-  "name": "whisper-server",
+  "name": "wispr-server",
   "private": true,
   "version": "0.1.0",
   "description": "LAN transcription service — POST /transcribe. Backend: dictation service web dictation (stub for now).",

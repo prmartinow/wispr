@@ -1,0 +1,6 @@
+[Unit]
+Description=wispr virtual-mic watchdog (re-run setup-virtmic if pulse/virtmic died)
+
+[Service]
+Type=oneshot
+ExecStart=~/dev/wispr/deploy/setup-virtmic.sh

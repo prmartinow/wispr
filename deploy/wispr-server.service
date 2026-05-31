@@ -1,0 +1,14 @@
+[Unit]
+Description=wispr transcription server (POST /transcribe + WS /v1/stream on :8090)
+After=wispr-browser.service wispr-virtmic.service network.target
+Wants=wispr-browser.service wispr-virtmic.service
+
+[Service]
+Type=simple
+WorkingDirectory=~/dev/wispr/server
+ExecStart=/usr/bin/node ~/dev/wispr/server/server.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -5,19 +5,19 @@ Remote (off-LAN) clients reach the server over the internet via the existing VPS
 ```
 client → https://wispr.p12w.xyz  (VPS Caddy: auto-TLS + REQUIRED client cert)
        → WireGuard (VPS vpn.local → home router → rpc)
-       → http://wispr.local:8090  (whisper server)
+       → http://wispr.local:8090  (wispr server)
 ```
 
 - **rpc ufw:** only the VPS WG peer `vpn.local` may reach `8090` over WG (plus the LAN rules).
-- **mTLS:** Caddy `client_auth mode require_and_verify` against `whisper-client-ca.crt`. No client
-  cert ⇒ TLS handshake rejected before the request reaches whisper. IP-independent (roams on any
+- **mTLS:** Caddy `client_auth mode require_and_verify` against `wispr-client-ca.crt`. No client
+  cert ⇒ TLS handshake rejected before the request reaches wispr. IP-independent (roams on any
   wifi/SIM). The 192-bit bearer token still applies at the app layer (defense in depth).
 - **LAN path is unchanged** — `http://wispr.local:8090` direct, bypasses Caddy/mTLS (trusted LAN).
 
 ## Files here (public, safe to commit)
-- `whisper-client-ca.crt` — the client-auth CA's public cert (installed on the VPS at
-  `/etc/caddy/whisper-clients-ca.crt`).
-- `whisper.caddy` — the Caddy vhost block (appended to `/etc/caddy/Caddyfile`).
+- `wispr-client-ca.crt` — the client-auth CA's public cert (installed on the VPS at
+  `/etc/caddy/wispr-clients-ca.crt`).
+- `wispr.caddy` — the Caddy vhost block (appended to `/etc/caddy/Caddyfile`).
 
 ## Private material (OFF-repo, on rpc at `~/.wispr/mtls/`, never commit)
 `ca.key` (CA private key — issues new client certs), `mac-client.{key,crt,p12}`, `p12.pass`.

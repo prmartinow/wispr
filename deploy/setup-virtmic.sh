@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Ensure a PulseAudio daemon is up and the whisper virtual mic exists. Idempotent.
-# whisper owns the pulse daemon (the system pulseaudio.service/socket are disabled to avoid
-# the autospawn-vs-service pid-file race). Run by whisper-virtmic.service at boot.
+# Ensure a PulseAudio daemon is up and the wispr virtual mic exists. Idempotent.
+# wispr owns the pulse daemon (the system pulseaudio.service/socket are disabled to avoid
+# the autospawn-vs-service pid-file race). Run by wispr-virtmic.service at boot.
 set -uo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
