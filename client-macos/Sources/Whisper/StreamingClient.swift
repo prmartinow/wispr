@@ -27,7 +27,7 @@ final class StreamingClient {
     }
 
     private let settings: Settings
-    private let session: URLSession
+    private var session: URLSession { Net.session }
     private var task: URLSessionWebSocketTask?
 
     // Final/error may arrive before finish() is awaited (e.g. an early `busy`); stash it.
@@ -43,13 +43,12 @@ final class StreamingClient {
 
     init(settings: Settings) {
         self.settings = settings
-        session = URLSession(configuration: .default)
     }
 
     /// Open the socket and send `{start}`. Returns immediately; frames may be sent right away
     /// (the server buffers anything that arrives before `ready`).
     func open() throws {
-        guard var comps = URLComponents(url: settings.serverURL, resolvingAgainstBaseURL: false)
+        guard var comps = URLComponents(url: settings.activeServerURL, resolvingAgainstBaseURL: false)
         else { throw StreamError.badURL }
         comps.scheme = (comps.scheme == "https") ? "wss" : "ws"
         comps.path = "/v1/stream"

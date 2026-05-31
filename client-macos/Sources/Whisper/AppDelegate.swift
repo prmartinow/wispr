@@ -4,6 +4,8 @@ import AVFoundation
 import Combine
 import SwiftUI
 
+private final class Counter { var n = 0 }
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = Settings()
     private let history = HistoryStore()
@@ -11,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var appState = AppState(settings: settings, history: history)
     private lazy var client = TranscriptionClient(settings: settings)
     private lazy var health = HealthMonitor(settings: settings)
+    private lazy var endpoints = EndpointSelector(settings: settings)
     private let capture = AudioStreamCapture()
     private var stream: StreamingClient?
 
@@ -56,6 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         health.start()
 
+        endpoints.onChange = { [weak self] _ in self?.health.check() } // re-check health on switch
+        endpoints.start()
+
         appState.$phase.receive(on: RunLoop.main)
             .sink { [weak self] phase in self?.renderMenuBar(phase) }
             .store(in: &cancellables)
@@ -98,7 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshMenu() {
-        serverStatusItem.title = "Server: \(appState.serverStatus.label)"
+        let kind = settings.activeServerURL == settings.serverURL ? "LAN" : "remote"
+        serverStatusItem.title = "Server: \(appState.serverStatus.label) · \(kind)"
         let n = appState.pendingCount
         pendingItem.isHidden = n == 0
         pendingItem.title = "Retry \(n) pending recording\(n == 1 ? "" : "s")"
@@ -251,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if FocusedField.confirmInserted(el, expected: text, before: before) {
             appState.phase = .inserted
             Log.log("deliver: paste CONFIRMED (\(text.count) chars)")
-            scheduleIdle(after: 1)
+            scheduleIdle(after: 0.4) // confirmed → return to interactive immediately (re-record fast)
         } else {
             appState.phase = .copied      // hint persists so the user can ⌘V manually
             Log.log("deliver: paste NOT confirmed — kept on clipboard (⌘V hint)")
@@ -265,7 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.log("retry: draining \(appState.pendingCount) pending")
         Task { [weak self] in
             guard let self else { return }
-            var recovered = 0
+            let recovered = Counter() // reference box (avoids capturing a mutated `var` concurrently)
             while let item = await MainActor.run(body: { self.pending.oldest() }) {
                 guard let wav = await MainActor.run(body: { self.pending.wav(for: item) }) else {
                     await MainActor.run { self.pending.remove(item); self.appState.pendingCount = self.pending.count }
@@ -278,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             self.history.add(text)
                             self.appState.lastTranscript = text
                             TextInserter.copy(text)
-                            recovered += 1
+                            recovered.n += 1
                         }
                         self.pending.remove(item)
                         self.appState.pendingCount = self.pending.count
@@ -292,8 +299,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await MainActor.run {
                 self.retrying = false
                 self.refreshMenu()
-                if recovered > 0, !self.appState.isBusy {
-                    Log.log("retry: recovered \(recovered) → last on clipboard + History")
+                if recovered.n > 0, !self.appState.isBusy {
+                    Log.log("retry: recovered \(recovered.n) → last on clipboard + History")
                     self.appState.phase = .copied
                     self.scheduleIdle(after: 4)
                 }

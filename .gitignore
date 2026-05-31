@@ -11,3 +11,6 @@ client-macos/build/
 client-macos/.build/
 client-macos/DerivedData/
 client-macos/Whisper.app/
+
+# mTLS client cert (off-repo)
+*.p12

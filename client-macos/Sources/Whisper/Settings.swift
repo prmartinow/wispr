@@ -24,18 +24,27 @@ final class Settings: ObservableObject {
         static let keyCode = "whisper.hotkey.keyCode"
         static let modifiers = "whisper.hotkey.modifiers"
         static let inputUID = "whisper.input.uid"
+        static let remoteURL = "whisper.remoteURL"
     }
 
     @Published var serverURLString: String { didSet { d.set(serverURLString, forKey: K.serverURL) } }
+    @Published var remoteURLString: String { didSet { d.set(remoteURLString, forKey: K.remoteURL) } }
     @Published var activation: ActivationMode { didSet { d.set(activation.rawValue, forKey: K.activation) } }
     @Published var hotKeyCode: UInt16 { didSet { d.set(Int(hotKeyCode), forKey: K.keyCode) } }
     @Published var hotKeyModifiers: UInt { didSet { d.set(Int(hotKeyModifiers), forKey: K.modifiers) } }
     @Published var inputDeviceUID: String? { didSet { d.set(inputDeviceUID, forKey: K.inputUID) } }
 
+    /// The endpoint currently in use, chosen by EndpointSelector (LAN preferred, remote fallback).
+    /// Not persisted — re-derived at launch.
+    @Published var activeServerURL: URL
+
     init() {
         let env = ProcessInfo.processInfo.environment
-        serverURLString = d.string(forKey: K.serverURL)
+        let initialServer = d.string(forKey: K.serverURL)
             ?? env["WHISPER_SERVER_URL"] ?? "http://wispr.local:8090"
+        serverURLString = initialServer
+        remoteURLString = d.string(forKey: K.remoteURL) ?? env["WHISPER_REMOTE_URL"] ?? "https://whisper.p12w.xyz"
+        activeServerURL = URL(string: initialServer) ?? URL(string: "http://wispr.local:8090")!
         activation = ActivationMode(rawValue: d.string(forKey: K.activation) ?? "") ?? .toggle
         // Default ⌘⇧1: ⌘⌥Space collides with Finder's "Search This Mac"; ⌘⇧1/2 are unbound
         // (screenshot shortcuts are ⌘⇧3/4/5). keyCode 18 = "1".
@@ -50,6 +59,12 @@ final class Settings: ObservableObject {
 
     var serverURL: URL {
         URL(string: serverURLString) ?? URL(string: "http://wispr.local:8090")!
+    }
+
+    /// Optional off-LAN endpoint (e.g. https://whisper.p12w.xyz), reached over mTLS.
+    var remoteURL: URL? {
+        let s = remoteURLString.trimmingCharacters(in: .whitespaces)
+        return s.isEmpty ? nil : URL(string: s)
     }
 
     var modifierFlags: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: hotKeyModifiers) }

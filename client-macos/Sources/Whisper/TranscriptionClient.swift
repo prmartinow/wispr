@@ -14,18 +14,10 @@ struct ServerError: Decodable {
 
 final class TranscriptionClient {
     private let settings: Settings
-    private let session: URLSession
+    private var session: URLSession { Net.session } // shared session (handles mTLS on remote)
 
     init(settings: Settings) {
         self.settings = settings
-        let cfg = URLSessionConfiguration.default
-        // The server holds the connection with no data until dictation finishes, and
-        // dictation plays the clip in real time (latency ≈ clip length + ~5–20 s). So this
-        // is effectively a total cap: keep it well above any sane clip so the client never
-        // abandons a request mid-flight (an abandoned request leaves the server's single
-        // composer/mic busy and breaks the *next* dictation too).
-        cfg.timeoutIntervalForRequest = 300
-        self.session = URLSession(configuration: cfg)
     }
 
     func transcribe(audioURL: URL) async throws -> String {
@@ -34,7 +26,7 @@ final class TranscriptionClient {
 
     /// Batch transcription of in-memory WAV bytes (used as the streaming fallback).
     func transcribe(wav audio: Data) async throws -> String {
-        let endpoint = settings.serverURL.appendingPathComponent("transcribe")
+        let endpoint = settings.activeServerURL.appendingPathComponent("transcribe")
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
@@ -63,7 +55,7 @@ final class TranscriptionClient {
 
     /// Lightweight reachability/auth probe for the Settings "Test" button.
     func health() async -> String {
-        let endpoint = settings.serverURL.appendingPathComponent("healthz")
+        let endpoint = settings.activeServerURL.appendingPathComponent("healthz")
         var req = URLRequest(url: endpoint)
         req.timeoutInterval = 6
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")

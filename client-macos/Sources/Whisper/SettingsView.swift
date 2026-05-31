@@ -16,7 +16,9 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Server") {
-                TextField("Server URL", text: $settings.serverURLString)
+                TextField("Server URL (LAN)", text: $settings.serverURLString)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Remote URL (off-LAN, mTLS)", text: $settings.remoteURLString)
                     .textFieldStyle(.roundedBorder)
                 SecureField("Bearer token", text: $token)
                     .textFieldStyle(.roundedBorder)

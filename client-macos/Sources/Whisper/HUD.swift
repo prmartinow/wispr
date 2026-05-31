@@ -32,14 +32,15 @@ final class HoverHostView: NSView {
 final class HUDController {
     private let panel: HUDPanel
     private let appState: AppState
+    private let container = HoverHostView()
     private var cancellables = Set<AnyCancellable>()
+    private var didLayout = false
+    private var collapseWork: DispatchWorkItem?
 
     init(state: AppState, onStart: @escaping () -> Void, onStop: @escaping () -> Void) {
         appState = state
         let hosting = NSHostingView(rootView: HUDView(state: state, onStart: onStart, onStop: onStop))
         hosting.autoresizingMask = [.width, .height]
-        let container = HoverHostView()
-        container.onHover = { [weak state] inside in state?.hudHovering = inside }
         hosting.frame = container.bounds
         container.addSubview(hosting)
 
@@ -59,17 +60,38 @@ final class HUDController {
             .receive(on: RunLoop.main)
             .sink { [weak self] phase, hovering in self?.layout(phase: phase, hovering: hovering) }
             .store(in: &cancellables)
+
+        // Route hover through a small debounce so the resize doesn't flicker at the edge.
+        container.onHover = { [weak self] inside in self?.setHover(inside) }
     }
 
     func show() { layout(phase: appState.phase, hovering: appState.hudHovering); panel.orderFrontRegardless() }
     func hide() { panel.orderOut(nil) }
+
+    private func setHover(_ inside: Bool) {
+        collapseWork?.cancel()
+        if inside {
+            appState.hudHovering = true
+        } else {
+            let work = DispatchWorkItem { [weak self] in self?.appState.hudHovering = false }
+            collapseWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        }
+    }
 
     private func layout(phase: DictationPhase, hovering: Bool) {
         let size = Self.size(phase: phase, hovering: hovering)
         guard let screen = NSScreen.main else { return }
         let vf = screen.visibleFrame
         let origin = NSPoint(x: vf.midX - size.width / 2, y: vf.minY + 18)
-        panel.setFrame(NSRect(origin: origin, size: size), display: true, animate: false)
+        let rect = NSRect(origin: origin, size: size)
+        guard didLayout else { panel.setFrame(rect, display: true); didLayout = true; return }
+        // Animate the magnify so it's smooth (not a jump).
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(rect, display: true)
+        }
     }
 
     private static func size(phase: DictationPhase, hovering: Bool) -> NSSize {
@@ -159,7 +181,8 @@ struct HUDView: View {
     private var statusColor: Color {
         switch state.serverStatus {
         case .up: return .green
-        case .backendDown: return .orange
+        case .loading: return .yellow
+        case .loggedOut, .backendDown, .serverOffline: return .orange
         case .unreachable: return .red
         case .unknown: return .gray
         }

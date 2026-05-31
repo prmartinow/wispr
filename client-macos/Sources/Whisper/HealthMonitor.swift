@@ -1,20 +1,33 @@
 import Foundation
 
+/// Server readiness, derived from the deep `/healthz` (browser / dictationService / mic / internet).
 enum ServerStatus: Equatable {
-    case unknown, up, backendDown, unreachable
+    case unknown
+    case up            // dictationService ready — safe to dictate
+    case loading       // browser up but dictation service still warming up
+    case loggedOut     // dictation service logged out — needs a human to log in
+    case backendDown   // Chromium/mic not available
+    case serverOffline // server reachable but it has no internet
+    case unreachable   // can't reach the server at all
+
     var label: String {
         switch self {
-        case .unknown:     return "checking…"
-        case .up:          return "online"
-        case .backendDown: return "backend down"
-        case .unreachable: return "offline"
+        case .unknown:       return "checking…"
+        case .up:            return "online"
+        case .loading:       return "warming up…"
+        case .loggedOut:     return "dictation service logged out"
+        case .backendDown:   return "backend down"
+        case .serverOffline: return "server has no internet"
+        case .unreachable:   return "unreachable"
         }
     }
+
+    /// Safe to record right now (everything green).
+    var isReady: Bool { self == .up }
 }
 
-/// Polls `/healthz` so the UI can show server/backend state and so pending takes can be
-/// auto-retried when the server comes back. Distinguishes "server up but Chromium/dictation service
-/// down" (backendDown) from "can't reach the server at all" (unreachable).
+/// Polls `/healthz` so the UI reflects server/backend state and pending takes can auto-retry
+/// when the server recovers. Reads the deep fields the server added in robustness pass 1/2.
 final class HealthMonitor {
     private let settings: Settings
     private var timer: Timer?
@@ -27,7 +40,7 @@ final class HealthMonitor {
 
     func start() {
         check()
-        let t = Timer(timeInterval: 25, repeats: true) { [weak self] _ in self?.check() }
+        let t = Timer(timeInterval: 20, repeats: true) { [weak self] _ in self?.check() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
@@ -35,24 +48,34 @@ final class HealthMonitor {
     func stop() { timer?.invalidate(); timer = nil }
 
     func check() {
-        let url = settings.serverURL.appendingPathComponent("healthz")
+        let url = settings.activeServerURL.appendingPathComponent("healthz")
         var req = URLRequest(url: url)
         req.timeoutInterval = 6
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
-        URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
+        Net.session.dataTask(with: req) { [weak self] data, resp, _ in
             guard let self else { return }
-            let new: ServerStatus
-            if let http = resp as? HTTPURLResponse, http.statusCode == 200,
-               let data, let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                new = (o["browser"] as? String) == "up" ? .up : .backendDown
-            } else {
-                new = .unreachable
-            }
+            let new = Self.classify(status: (resp as? HTTPURLResponse)?.statusCode, data: data)
             DispatchQueue.main.async {
                 let changed = self.status != new
                 self.status = new
                 if changed { self.onChange?(new) }
             }
         }.resume()
+    }
+
+    static func classify(status code: Int?, data: Data?) -> ServerStatus {
+        guard code == 200, let data,
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .unreachable
+        }
+        let browser = o["browser"] as? String
+        let dictationService = o["dictationService"] as? String
+        let internet = o["internet"] as? String
+        if browser != "up" { return .backendDown }
+        if dictationService == "logged_out" { return .loggedOut }
+        if dictationService == "loading" || dictationService == "no-tab" { return .loading }
+        if internet == "down" { return .serverOffline }
+        if dictationService == "ready" { return .up }
+        return .backendDown
     }
 }
