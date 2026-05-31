@@ -46,8 +46,20 @@ Chromium's `--use-file-for-fake-audio-capture` with **no transcode**.
 
 ## Health
 ```
-GET /healthz → 200 { "ok": true, "engine": "stub|dictation-service", "browser": "up|down" }
+GET /healthz → 200  (always; read the fields to decide what to do)
+  { "ok": true, "engine": "dictation-service",
+    "browser":  "up|down",                          // service Chromium (CDP) reachable
+    "dictationService":  "ready|logged_out|loading|unreachable|no-tab",  // backend session state
+    "mic":      "ok|missing",                       // PulseAudio virtual mic present
+    "internet": "ok|down",                          // server's own egress
+    "busy":     true|false,                         // a transcription is in flight
+    "checkedAt":"<iso>" }                            // snapshot age (monitor runs ~every 20s)
+
+GET /readyz  → 200 if browser=up & dictationService=ready & mic=ok & internet=ok, else 503 (same body)
 ```
+**Client guidance:** probe `/healthz` to pick a reachable endpoint (LAN vs remote) and to decide
+send-vs-buffer. `dictationService:"logged_out"` → backend needs re-login (don't retry blindly).
+`internet:"down"` or unreachable → buffer locally and retry when `/readyz` is 200.
 
 ## Backend notes (server-internal — client must not depend on these)
 - Transcription = dictation service web **dictation** driven through Chromium. See

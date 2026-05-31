@@ -115,7 +115,27 @@ async function abortStream(s) {
   release();
 }
 
-module.exports = { transcribe, startStream, pushAudio, stopStream, abortStream };
+// --- read-only health probe (independent of the transcribe mutex/page) ------
+function isBusy() { return _busy; }
+async function probe() {
+  let b;
+  try {
+    b = await chromium.connectOverCDP(CDP, { timeout: 4000 });
+    const page = b.contexts()[0].pages().find(p => p.url().startsWith('DICTATION_SERVICE_URL/'));
+    if (!page) return { browser: 'up', dictationService: 'no-tab' };
+    const st = await page.evaluate(() => {
+      const txt = el => (el.innerText || el.textContent || '').trim();
+      const loggedOut = [...document.querySelectorAll('button,a,[role="button"]')].some(e => /^log in$|^sign up for free$/i.test(txt(e)));
+      const dict = !!document.querySelector('[aria-label="Start dictation"],[aria-label="Submit dictation"]');
+      return { loggedOut, dict };
+    });
+    return { browser: 'up', dictationService: st.loggedOut ? 'logged_out' : (st.dict ? 'ready' : 'loading') };
+  } catch (_) {
+    return { browser: 'down', dictationService: 'unreachable' };
+  } finally { try { await b.close(); } catch (_) {} }
+}
+
+module.exports = { transcribe, startStream, pushAudio, stopStream, abortStream, probe, isBusy };
 
 if (require.main === module) {
   const wav = process.argv[2];

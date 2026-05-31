@@ -16,7 +16,8 @@ Client → server:
 1. Text (JSON) **`{"type":"start"}`** — opens dictation. Extra fields (e.g. `format`, `lang`) are
    accepted and ignored; the server assumes the format below.
 2. **Binary frames** = raw PCM, **s16le, 48000 Hz, mono** (no WAV header), ~100 ms/frame at ~capture
-   pace. SHOULD begin after `ready`, but frames sent before `ready` are buffered and not lost.
+   pace. **Wait for `ready` before sending** — audio sent before `ready` may be lost (dictation service trims
+   the dictation start until it's fully engaged; confirmed by the mac client's tests).
 3. Text (JSON) **`{"type":"stop"}`** — finalize.
 
 Server → client:

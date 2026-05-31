@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const dictate = require('./dictate');
 const { WebSocketServer } = require('ws');
+const { spawn } = require('child_process');
 
 // --- config (server/.env, gitignored) -------------------------------------
 function loadEnv(p) {
@@ -45,18 +46,34 @@ function bearerOk(req) {
   return !!m && m[1] === TOKEN;
 }
 
-// Non-blocking liveness check of the Chromium DevTools endpoint the real
-// backend will drive, surfaced in /healthz so drift/outage is visible.
-function browserState() {
-  return new Promise((resolve) => {
-    const r = http.get(DEVTOOLS, { timeout: 600 }, (resp) => {
-      resp.resume();
-      resolve(resp.statusCode === 200 ? 'up' : 'down');
-    });
-    r.on('timeout', () => { r.destroy(); resolve('down'); });
-    r.on('error', () => resolve('down'));
+// --- health monitor: a cached snapshot so /healthz is instant and never disturbs dictation ---
+let _health = { ok: true, engine: ENGINE, browser: 'unknown', dictationService: 'unknown', mic: 'unknown', internet: 'unknown', busy: false, checkedAt: null };
+
+function micOk() {
+  return new Promise(resolve => {
+    const p = spawn('pactl', ['list', 'short', 'sources'], { env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || '/run/user/1000' } });
+    let out = ''; p.stdout.on('data', d => (out += d));
+    p.on('error', () => resolve(false));
+    p.on('close', () => resolve(/virtmic_in/.test(out)));
   });
 }
+async function internetOk() {
+  try {
+    const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 3000);
+    const r = await fetch('https://www.google.com/generate_204', { signal: ac.signal });
+    clearTimeout(t); return r.status < 400;
+  } catch (_) { return false; }
+}
+// browser/dictationService come from a read-only probe; skipped while a transcription is in flight (don't disturb it).
+async function refreshHealth() {
+  const busy = dictate.isBusy();
+  let browser = 'up', dictationService = 'ready';
+  if (!busy) { const p = await dictate.probe(); browser = p.browser; dictationService = p.dictationService; }
+  const [mic, net] = await Promise.all([micOk(), internetOk()]);
+  _health = { ok: true, engine: ENGINE, browser, dictationService, mic: mic ? 'ok' : 'missing', internet: net ? 'ok' : 'down', busy, checkedAt: new Date().toISOString() };
+}
+setInterval(() => refreshHealth().catch(() => {}), 20000);
+refreshHealth().catch(() => {});
 
 function readBody(req, maxBytes = 25 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -99,7 +116,11 @@ const server = http.createServer(async (req, res) => {
     const url = req.url.split('?')[0];
 
     if (req.method === 'GET' && url === '/healthz') {
-      return sendJson(res, 200, { ok: true, engine: ENGINE, browser: await browserState() });
+      return sendJson(res, 200, _health);
+    }
+    if (req.method === 'GET' && url === '/readyz') {
+      const ready = _health.browser === 'up' && _health.dictationService === 'ready' && _health.mic === 'ok' && _health.internet === 'ok';
+      return sendJson(res, ready ? 200 : 503, _health);
     }
 
     if (req.method === 'POST' && url === '/transcribe') {
