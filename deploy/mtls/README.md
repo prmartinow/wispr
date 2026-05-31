@@ -28,6 +28,12 @@ cd ~/.wispr/mtls
 openssl genrsa -out DEVICE.key 2048
 openssl req -new -key DEVICE.key -subj "/CN=DEVICE" -out DEVICE.csr
 openssl x509 -req -in DEVICE.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 825 -sha256 -out DEVICE.crt
-openssl pkcs12 -export -out DEVICE.p12 -inkey DEVICE.key -in DEVICE.crt -certfile ca.crt -passout pass:PASS
+openssl pkcs12 -export -name DEVICE -out DEVICE.p12 \
+  -inkey DEVICE.key -in DEVICE.crt -certfile ca.crt \
+  -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
+  -passout pass:PASS
 ```
 (The same CA already trusted by Caddy — no VPS change needed for new devices.)
+
+On macOS, import the client cert/key into the login Keychain without `-A`; the app pins the expected
+subject/issuer/fingerprints and should prompt only when it first needs the private key.

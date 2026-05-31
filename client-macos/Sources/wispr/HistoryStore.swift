@@ -21,8 +21,9 @@ final class HistoryStore: ObservableObject {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("wispr", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        PrivateFiles.ensureDirectory(base)
         url = base.appendingPathComponent("history.json")
+        PrivateFiles.lockDownIfPresent(url)
         load()
     }
 
@@ -46,6 +47,6 @@ final class HistoryStore: ObservableObject {
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(entries) { try? data.write(to: url) }
+        if let data = try? JSONEncoder().encode(entries) { try? PrivateFiles.write(data, to: url) }
     }
 }

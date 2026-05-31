@@ -18,9 +18,10 @@ final class PendingStore: ObservableObject {
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("wispr/pending", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        PrivateFiles.ensureDirectory(base)
         dir = base
         indexURL = base.appendingPathComponent("index.json")
+        PrivateFiles.lockDownIfPresent(indexURL)
         load()
     }
 
@@ -30,7 +31,7 @@ final class PendingStore: ObservableObject {
 
     func add(wav: Data, reason: String) {
         let item = PendingItem(id: UUID(), file: "\(UUID().uuidString).wav", date: Date(), reason: reason)
-        try? wav.write(to: dir.appendingPathComponent(item.file))
+        try? PrivateFiles.write(wav, to: dir.appendingPathComponent(item.file))
         items.insert(item, at: 0)
         while items.count > cap, let dropped = items.popLast() {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(dropped.file))
@@ -50,6 +51,6 @@ final class PendingStore: ObservableObject {
         }
     }
     private func save() {
-        if let d = try? JSONEncoder().encode(items) { try? d.write(to: indexURL) }
+        if let d = try? JSONEncoder().encode(items) { try? PrivateFiles.write(d, to: indexURL) }
     }
 }

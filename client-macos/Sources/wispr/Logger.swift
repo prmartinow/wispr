@@ -8,8 +8,10 @@ enum Log {
     static let fileURL: URL = {
         let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs/wispr", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("wispr.log")
+        PrivateFiles.ensureDirectory(dir)
+        let file = dir.appendingPathComponent("wispr.log")
+        PrivateFiles.lockDownIfPresent(file)
+        return file
     }()
 
     private static let oslog = os.Logger(subsystem: "xyz.p12w.wispr", category: "app")
@@ -29,8 +31,9 @@ enum Log {
                 handle.seekToEndOfFile()
                 handle.write(Data(line.utf8))
             } else {
-                try? Data(line.utf8).write(to: fileURL)
+                try? PrivateFiles.write(Data(line.utf8), to: fileURL)
             }
+            chmod(fileURL.path, 0o600)
         }
     }
 }

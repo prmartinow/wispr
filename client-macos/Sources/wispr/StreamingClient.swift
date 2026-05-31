@@ -37,9 +37,12 @@ final class StreamingClient {
 
     // Hold frames until the server says `ready`, then flush — otherwise audio sent during the
     // server's start→ready window (dictation engaging) is dropped and the start is lost.
+    private let maxPreReadyBytes = 2 * 1024 * 1024
     private let lock = NSLock()
     private var ready = false
     private var preReady: [Data] = []
+    private var preReadyBytes = 0
+    private var loggedPreReadyDrop = false
 
     init(settings: Settings) {
         self.settings = settings
@@ -70,6 +73,15 @@ final class StreamingClient {
             rawSend(data)
         } else {
             preReady.append(data) // flushed on `ready`
+            preReadyBytes += data.count
+            while preReadyBytes > maxPreReadyBytes, !preReady.isEmpty {
+                let dropped = preReady.removeFirst()
+                preReadyBytes -= dropped.count
+                if !loggedPreReadyDrop {
+                    loggedPreReadyDrop = true
+                    Log.log("stream: pre-ready buffer cap reached; dropping oldest audio frames")
+                }
+            }
             lock.unlock()
         }
     }
@@ -125,6 +137,7 @@ final class StreamingClient {
             ready = true
             let buffered = preReady
             preReady.removeAll()
+            preReadyBytes = 0
             lock.unlock()
             Log.log("stream: ready (flushing \(buffered.count) buffered frames)")
             for f in buffered { rawSend(f) }
@@ -141,6 +154,10 @@ final class StreamingClient {
     private func settle(_ result: Result<String, Error>) {
         guard !settled else { return }
         settled = true
+        lock.lock()
+        preReady.removeAll()
+        preReadyBytes = 0
+        lock.unlock()
         if let cont = continuation {
             continuation = nil
             resume(with: result, cont: cont)

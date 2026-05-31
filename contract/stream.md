@@ -25,6 +25,8 @@ Server → client:
 - `{"type":"final","text":"…","duration_ms":N}` — the transcript; server then closes.
 - `{"type":"error","code":"busy|backend_unavailable|transcription_error|bad_request|idle_timeout|max_duration","message":"…"}`.
   (`idle_timeout`: no audio for ~25 s after `ready` → mic freed; `max_duration`: stream exceeded 10 min.)
+  The server also rejects oversized frames, excessive pre-ready audio, and sockets that never send
+  `start`, so a bad client cannot hold unbounded memory before dictation is ready.
 
 If the client disconnects before `stop`, the server aborts cleanly (cancels dictation, frees the
 mic) — no stuck composer. Clients should ignore unknown message types (forward-compat).

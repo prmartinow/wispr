@@ -7,7 +7,7 @@ Wants=vnc-xvfb.service wispr-virtmic.service
 Type=simple
 Environment=DISPLAY=:95
 # XDG_RUNTIME_DIR (/run/user/1000) is provided by the user manager -> finds the PulseAudio virtual mic.
-ExecStart=/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-linux64/chrome --user-data-dir=~/.wispr/profiles/service --remote-debugging-port=9223 --no-first-run --no-default-browser-check --disable-dev-shm-usage --no-sandbox --use-fake-ui-for-media-stream DICTATION_SERVICE_URL/
+ExecStart=/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-linux64/chrome --user-data-dir=~/.wispr/profiles/service --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --no-first-run --no-default-browser-check --disable-dev-shm-usage --use-fake-ui-for-media-stream DICTATION_SERVICE_URL/
 Restart=always
 RestartSec=5
 

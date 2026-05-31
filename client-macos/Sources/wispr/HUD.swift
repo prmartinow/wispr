@@ -182,7 +182,7 @@ struct HUDView: View {
         switch state.serverStatus {
         case .up: return .green
         case .loading: return .yellow
-        case .loggedOut, .backendDown, .serverOffline: return .orange
+        case .loggedOut, .backendDown, .serverOffline, .unauthorized: return .orange
         case .unreachable: return .red
         case .unknown: return .gray
         }

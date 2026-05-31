@@ -88,8 +88,10 @@ async function submitAndScrape(page) {
 // --- batch mode -------------------------------------------------------------
 async function transcribe(audioBuffer) {
   await acquire();
-  const tmp = path.join(os.tmpdir(), `dictate-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
-  fs.writeFileSync(tmp, audioBuffer);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wispr-dictate-'));
+  fs.chmodSync(tmpDir, 0o700);
+  const tmp = path.join(tmpDir, 'audio.wav');
+  fs.writeFileSync(tmp, audioBuffer, { mode: 0o600 });
   const t0 = Date.now();
   try {
     const page = await getPage();
@@ -100,7 +102,7 @@ async function transcribe(audioBuffer) {
     recordResult(!!(text && text.length), Date.now() - t0, text ? undefined : 'empty transcript');
     return text;
   } catch (e) { recordResult(false, Date.now() - t0, e.message); throw e; }
-  finally { fs.unlink(tmp, () => {}); release(); }
+  finally { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} release(); }
 }
 
 // --- streaming mode ---------------------------------------------------------

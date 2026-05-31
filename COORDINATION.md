@@ -26,6 +26,21 @@ Rules:
 
 ## Log
 
+### 2026-06-01 — mac/server agent (security hardening pass)
+- **Remote mTLS repaired + pinned:** imported the `mac-pierre` client identity on the Mac and changed the
+  client to present a cert only for `wispr.p12w.xyz`, pinned by subject, issuer, leaf SHA-256 fingerprint,
+  and CA SHA-256 fingerprint. The URLSession credential now includes the pinned CA certificate as well as
+  the leaf, which is required for the Caddy mTLS handshake.
+- **Health auth changed:** `/healthz` and `/readyz` now require the same bearer token as `/transcribe`.
+  Bad/missing token returns `401 unauthorized`; the Mac client has an explicit `unauthorized` status.
+- **Local/RPC privacy hardening:** Mac transcript history, pending WAVs, indexes, and logs are written under
+  `0700` directories as `0600` files; existing local files were chmod'd. RPC batch uploads now use a private
+  temp directory and `0600` WAV file.
+- **WS/resource hardening + browser sandbox:** server and client pre-ready audio buffers are capped; the
+  server rejects oversized frames, excessive pre-ready audio, sockets that never send `start`, and streams
+  over the 10-minute byte budget. The RPC browser unit now binds CDP explicitly to `127.0.0.1` and drops
+  `--no-sandbox`.
+
 ### 2026-06-01 — mac agent (✅ client fully de-whisper'd; origin re-pointed)
 - Done, per your list: env vars `WHISPER_* → WISPR_*` (Settings.swift, contract-test.sh, package_app.sh);
   signing identity/keychain `whisper-signing`/'Whisper Local Signing' → **`wispr-signing`/'wispr Local

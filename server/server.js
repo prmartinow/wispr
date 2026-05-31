@@ -116,9 +116,11 @@ const server = http.createServer(async (req, res) => {
     const url = req.url.split('?')[0];
 
     if (req.method === 'GET' && url === '/healthz') {
+      if (!bearerOk(req)) return sendErr(res, 401, 'unauthorized', 'missing or invalid bearer token');
       return sendJson(res, 200, { ..._health, busy: dictate.isBusy() }); // busy live; rest cached
     }
     if (req.method === 'GET' && url === '/readyz') {
+      if (!bearerOk(req)) return sendErr(res, 401, 'unauthorized', 'missing or invalid bearer token');
       const ready = _health.browser === 'up' && _health.dictationService === 'ready' && _health.mic === 'ok' && _health.internet === 'ok';
       return sendJson(res, ready ? 200 : 503, _health);
     }
@@ -150,6 +152,10 @@ const server = http.createServer(async (req, res) => {
 const HEARTBEAT_MS = 10000;   // ws ping cadence; a missed pong terminates the socket
 const STREAM_IDLE_MS = 25000; // a started stream with no audio this long -> free the mic
 const STREAM_MAX_MS = 600000; // hard cap on one stream (10 min) -> free the mic
+const STREAM_START_MS = 10000; // socket opened but no start -> close it
+const STREAM_MAX_FRAME_BYTES = 256 * 1024;
+const STREAM_MAX_PRE_READY_BYTES = 2 * 1024 * 1024;
+const STREAM_MAX_BYTES = 48000 * 2 * 600; // 10 minutes of s16le/48k/mono
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   if (req.url.split('?')[0] !== '/v1/stream') { socket.destroy(); return; }
@@ -158,10 +164,13 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 function handleStream(ws) {
-  let startP = null, session = null, stopped = false, lastActivity = Date.now(), startedAt = 0, alive = true;
+  let startP = null, session = null, stopped = false, lastActivity = Date.now(), openedAt = Date.now(), startedAt = 0, alive = true;
   const pre = []; // binary frames that arrive before the session is ready -> flushed on ready
+  let preBytes = 0, streamBytes = 0, closing = false;
   const send = obj => { try { ws.send(JSON.stringify(obj)); } catch (_) {} };
   const abort = async (code, message) => {
+    if (closing) return;
+    closing = true;
     if (session) { const s = session; session = null; await dictate.abortStream(s).catch(() => {}); }
     if (code) send({ type: 'error', code, message });
     try { ws.close(); } catch (_) {}
@@ -169,13 +178,26 @@ function handleStream(ws) {
   ws.on('pong', () => { alive = true; });
   ws.on('message', async (data, isBinary) => {
     lastActivity = Date.now();
-    if (isBinary) { if (session) dictate.pushAudio(session, data); else pre.push(data); return; }
+    if (isBinary) {
+      const n = Buffer.byteLength(data);
+      if (n > STREAM_MAX_FRAME_BYTES) { abort('frame_too_large', 'audio frame too large'); return; }
+      streamBytes += n;
+      if (streamBytes > STREAM_MAX_BYTES) { abort('max_duration', 'stream exceeded max audio bytes'); return; }
+      if (session) {
+        dictate.pushAudio(session, data);
+      } else {
+        preBytes += n;
+        if (preBytes > STREAM_MAX_PRE_READY_BYTES) { abort('pre_ready_overflow', 'audio sent before ready exceeded buffer limit'); return; }
+        pre.push(data);
+      }
+      return;
+    }
     let msg; try { msg = JSON.parse(data.toString()); } catch (_) { return; }
     if (msg.type === 'start') {
       if (startP) return;                          // extra start fields (format/lang) are ignored
       startedAt = Date.now();
       startP = dictate.startStream();
-      try { session = await startP; for (const b of pre.splice(0)) dictate.pushAudio(session, b); send({ type: 'ready' }); }
+      try { session = await startP; for (const b of pre.splice(0)) dictate.pushAudio(session, b); preBytes = 0; send({ type: 'ready' }); }
       catch (e) { send({ type: 'error', code: e.code || 'backend_unavailable', message: String(e.message || e) }); try { ws.close(); } catch (_) {} }
     } else if (msg.type === 'stop') {
       if (stopped) return; stopped = true;
@@ -191,6 +213,7 @@ function handleStream(ws) {
   const wd = setInterval(() => {
     if (!alive) { try { ws.terminate(); } catch (_) {} return; }   // -> 'close' -> abortStream frees the mic
     alive = false; try { ws.ping(); } catch (_) {}
+    if (!startP && Date.now() - openedAt > STREAM_START_MS) abort('start_timeout', 'stream did not start');
     if (session && !stopped) {
       if (Date.now() - lastActivity > STREAM_IDLE_MS) abort('idle_timeout', 'no audio received; freeing the mic');
       else if (startedAt && Date.now() - startedAt > STREAM_MAX_MS) abort('max_duration', 'stream exceeded max duration');

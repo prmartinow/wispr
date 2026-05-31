@@ -46,7 +46,8 @@ Chromium's `--use-file-for-fake-audio-capture` with **no transcode**.
 
 ## Health
 ```
-GET /healthz → 200  (always; read the fields to decide what to do)
+GET /healthz → 200  (when authorized; read the fields to decide what to do)
+Authorization: Bearer <token>
   { "ok": true, "engine": "dictation-service",
     "browser":  "up|down",                          // service Chromium (CDP) reachable
     "dictationService":  "ready|logged_out|loading|unreachable|no-tab",  // backend session state
@@ -57,7 +58,9 @@ GET /healthz → 200  (always; read the fields to decide what to do)
     "checkedAt":"<iso>" }                            // snapshot age (monitor runs ~every 20s)
 
 GET /readyz  → 200 if browser=up & dictationService=ready & mic=ok & internet=ok, else 503 (same body)
+Authorization: Bearer <token>
 ```
+Bad or missing token returns `401 unauthorized`, same as `/transcribe`.
 **Client guidance:** probe `/healthz` to pick a reachable endpoint (LAN vs remote) and to decide
 send-vs-buffer. `dictationService:"logged_out"` → backend needs re-login (don't retry blindly).
 `internet:"down"` or unreachable → buffer locally and retry when `/readyz` is 200.

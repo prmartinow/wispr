@@ -8,6 +8,7 @@ enum ServerStatus: Equatable {
     case loggedOut     // dictation service logged out — needs a human to log in
     case backendDown   // Chromium/mic not available
     case serverOffline // server reachable but it has no internet
+    case unauthorized  // bearer token missing or wrong
     case unreachable   // can't reach the server at all
 
     var label: String {
@@ -18,6 +19,7 @@ enum ServerStatus: Equatable {
         case .loggedOut:     return "dictation service logged out"
         case .backendDown:   return "backend down"
         case .serverOffline: return "server has no internet"
+        case .unauthorized:  return "unauthorized"
         case .unreachable:   return "unreachable"
         }
     }
@@ -64,6 +66,7 @@ final class HealthMonitor {
     }
 
     static func classify(status code: Int?, data: Data?) -> ServerStatus {
+        if code == 401 { return .unauthorized }
         guard code == 200, let data,
               let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return .unreachable
