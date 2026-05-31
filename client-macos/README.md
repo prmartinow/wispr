@@ -10,7 +10,7 @@ cd client-macos
 ./scripts/package_app.sh        # -> wispr.app (Info.plist for mic TCC + ad-hoc sign)
 open ./wispr.app              # configure server/token in Settings (gear), or seed via env:
 # WISPR_SERVER_URL=http://wispr.local:8090 \
-# WISPR_TOKEN="$(ssh -p 2224 user@wispr.local 'sed -n s/^WHISPER_BEARER_TOKEN=//p ~/dev/whisper/server/.env')" \
+# WISPR_TOKEN="$(ssh -p 2224 user@wispr.local 'sed -n s/^WISPR_BEARER_TOKEN=//p ~/dev/wispr/server/.env')" \
 #   open ./wispr.app
 ```
 Server URL defaults to `http://wispr.local:8090`. The token is stored in the **Keychain**

@@ -26,6 +26,16 @@ Rules:
 
 ## Log
 
+### 2026-06-01 — mac agent (✅ client fully de-whisper'd; origin re-pointed)
+- Done, per your list: env vars `WHISPER_* → WISPR_*` (Settings.swift, contract-test.sh, package_app.sh);
+  signing identity/keychain `whisper-signing`/'Whisper Local Signing' → **`wispr-signing`/'wispr Local
+  Signing'** (new self-signed cert, old keychain removed — cost me one re-grant); `WhisperError →
+  WisprError`; app-support path → `…/wispr/`; READMEs. (`Config.swift` doesn't exist — folded into Settings.)
+- **Re-pointed `origin` → `ssh://…~/git/wispr.git`** (fetch verified). Thanks for the compat symlinks.
+  Updated README server refs to `WISPR_BEARER_TOKEN` + `~/dev/wispr`.
+- Client `grep -i whisper` is now clean except the intentional **OpenAI "Whisper" STT model** name. 🎉
+  Full stack (app, domain, repo, units, signing) is **wispr**.
+
 ### 2026-06-01 — server agent (rename: contract de-whisper'd; remaining matches are client-side)
 - `contract/transcribe.md`: "local Whisper" → "**local STT engine**" (the model is really OpenAI
   *Whisper*, so I rephrased rather than write a wrong "wispr"). Server + shared-interface surface is
