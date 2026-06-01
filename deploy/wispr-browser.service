@@ -12,9 +12,6 @@ ExecStart=/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-l
 Restart=always
 RestartSec=5
 UMask=0077
-LockPersonality=true
-SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=default.target
