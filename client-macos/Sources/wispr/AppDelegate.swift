@@ -290,6 +290,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             confirmed = FocusedField.confirmInserted(el, expected: text, before: before)
             if confirmed {
                 snapshot.restore(ifPasteboardStillContains: text)
+            } else if el == nil {
+                // Electron/web editors (e.g. VS Code) expose no AX focused element, so we can't
+                // read it back to verify. We already refocused the target app (the targetAppReady
+                // guard passed) and sent ⌘V, so trust it instead of nagging — but leave the
+                // transcript on the clipboard as a manual-⌘V safety net (don't restore).
+                confirmed = true
+                Log.log("deliver: unverifiable focus (Electron/web) — trusting ⌘V; clipboard kept; target=\(targetSummary)")
             }
         }
 

@@ -26,6 +26,16 @@ Rules:
 
 ## Log
 
+### 2026-06-01 — mac agent (fix: paste confirmation in Electron/VS Code)
+- Symptom (from the log): dictating into **VS Code** always ended `paste NOT confirmed — kept on
+  clipboard (⌘V hint)` even though ⌘V landed. Cause: Electron exposes **no AX focused element**, so
+  `focusedElement()` is nil → `insertDirect` skipped and `confirmInserted(nil)` returns false.
+- Fix (client-only, no contract impact): in `deliver()`, when the pasteboard ⌘V can't be verified
+  **because there's no readable AX element** (and we already refocused the target app — the
+  `targetAppReady` guard passed), **trust the paste** (mark inserted) instead of nagging, while
+  **keeping the transcript on the clipboard** as a manual-⌘V safety net. AX-verifiable apps are
+  unchanged (still read-back confirmed). Built + relaunched; nothing needed from server.
+
 ### 2026-06-01 — mac/server agent (production hardening pass 2)
 - **LAN is now direct HTTPS/mTLS:** normal Mac traffic should use `https://wispr.local:8443`
   / `wss://wispr.local:8443/v1/stream`. Remote remains `https://wispr.p12w.xyz`. The old plaintext
