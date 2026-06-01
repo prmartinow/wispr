@@ -2,6 +2,34 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 
+struct PasteboardSnapshot {
+    private let items: [[(NSPasteboard.PasteboardType, Data)]]
+
+    static func capture() -> PasteboardSnapshot {
+        let pb = NSPasteboard.general
+        let captured = (pb.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in
+                item.data(forType: type).map { (type, $0) }
+            }
+        }
+        return PasteboardSnapshot(items: captured)
+    }
+
+    func restore(ifPasteboardStillContains text: String) {
+        let pb = NSPasteboard.general
+        guard pb.string(forType: .string) == text else { return }
+        pb.clearContents()
+        let restored = items.map { itemData -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for (type, data) in itemData { item.setData(data, forType: type) }
+            return item
+        }
+        if !restored.isEmpty {
+            pb.writeObjects(restored)
+        }
+    }
+}
+
 /// Inserts transcribed text into whatever app is focused.
 /// Strategy: stash the text on the pasteboard, synthesize ⌘V. Requires the app to be
 /// granted Accessibility permission (System Settings ▸ Privacy & Security ▸ Accessibility)

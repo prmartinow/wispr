@@ -17,7 +17,7 @@ enum WisprError: Error {
         switch self {
         case .unreachable:        return "Server offline — saved, will retry"
         case .unauthorized:       return "Unauthorized — set token in Settings"
-        case .busy:               return "Server busy — try again"
+        case .busy:               return "Server busy — saved, will retry"
         case .backendUnavailable: return "Backend down — saved, will retry"
         case .transcriptionFailed:return "Transcription failed — saved, will retry"
         case .timeout:            return "Timed out — saved, will retry"
@@ -30,7 +30,7 @@ enum WisprError: Error {
     /// Save the recording to the retry queue (transient backend/transport issues).
     var shouldBuffer: Bool {
         switch self {
-        case .unreachable, .backendUnavailable, .transcriptionFailed, .timeout: return true
+        case .unreachable, .busy, .backendUnavailable, .transcriptionFailed, .timeout: return true
         default: return false
         }
     }
@@ -47,6 +47,7 @@ enum WisprError: Error {
         }
         if let c = error as? TranscriptionClient.ClientError {
             switch c {
+            case .badEndpoint: return .other("Bad server URL")
             case .server(let code, _): return fromCode(code)
             case .http(let status):
                 if status == 401 { return .unauthorized }
@@ -72,6 +73,8 @@ enum WisprError: Error {
         case "busy":                return .busy
         case "backend_unavailable": return .backendUnavailable
         case "transcription_timeout": return .timeout
+        case "invalid_audio", "audio_too_large", "bad_request":
+            return .other("Recording could not be sent")
         default:                    return .transcriptionFailed
         }
     }

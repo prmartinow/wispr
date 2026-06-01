@@ -5,9 +5,10 @@ you record**, so after the user stops only the tail + dictation service's finali
 after stop is roughly constant regardless of clip length. Batch `POST /transcribe` stays for
 compatibility. Jointly owned; change via commit + a `../COORDINATION.md` entry.
 
-- **URL:** `ws://wispr.local:8090/v1/stream`
-- **Auth:** `Authorization: Bearer <token>` header on the upgrade request (bad/missing → `401`,
-  upgrade refused). Same token as batch (`server/.env`).
+- **URL (LAN):** `wss://wispr.local:8443/v1/stream`
+- **URL (remote):** `wss://wispr.p12w.xyz/v1/stream`
+- **Auth:** required client cert (mTLS) plus `Authorization: Bearer <token>` header on the upgrade
+  request (bad/missing → `401`, upgrade refused). Same token as batch (`server/.env`).
 - Only **one** stream or batch request runs at a time (single composer/mic). A second `start` while
   busy → `{"type":"error","code":"busy"}`.
 
@@ -16,8 +17,8 @@ Client → server:
 1. Text (JSON) **`{"type":"start"}`** — opens dictation. Extra fields (e.g. `format`, `lang`) are
    accepted and ignored; the server assumes the format below.
 2. **Binary frames** = raw PCM, **s16le, 48000 Hz, mono** (no WAV header), ~100 ms/frame at ~capture
-   pace. **Wait for `ready` before sending** — audio sent before `ready` may be lost (dictation service trims
-   the dictation start until it's fully engaged; confirmed by the mac client's tests).
+   pace. The server buffers a small bounded amount before `ready`; the client also caps its
+   pre-ready buffer.
 3. Text (JSON) **`{"type":"stop"}`** — finalize.
 
 Server → client:
@@ -26,7 +27,8 @@ Server → client:
 - `{"type":"error","code":"busy|backend_unavailable|transcription_error|bad_request|idle_timeout|max_duration","message":"…"}`.
   (`idle_timeout`: no audio for ~25 s after `ready` → mic freed; `max_duration`: stream exceeded 10 min.)
   The server also rejects oversized frames, excessive pre-ready audio, and sockets that never send
-  `start`, so a bad client cannot hold unbounded memory before dictation is ready.
+  `start`, so a bad client cannot hold unbounded memory before dictation is ready. A full stream is
+  capped at 10 minutes.
 
 If the client disconnects before `stop`, the server aborts cleanly (cancels dictation, frees the
 mic) — no stuck composer. Clients should ignore unknown message types (forward-compat).

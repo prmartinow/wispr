@@ -1,9 +1,8 @@
 import Foundation
 
-/// Picks the active endpoint: prefer **LAN** (`wispr.local:8090`, fast, no mTLS — also covers
-/// WireGuard since the same IP routes over the tunnel); fall back to the **remote** mTLS URL
-/// (`https://wispr.p12w.xyz`) when LAN isn't reachable. Re-evaluates at launch, periodically,
-/// and on demand. Sets `settings.activeServerURL`, which the clients read per request.
+/// Picks the active endpoint: prefer direct LAN HTTPS/mTLS, then remote mTLS.
+/// Re-evaluates at launch, periodically, and on demand. Sets `settings.activeServerURL`,
+/// which the clients read per request.
 final class EndpointSelector {
     private let settings: Settings
     private var timer: Timer?
@@ -38,6 +37,7 @@ final class EndpointSelector {
     }
 
     static func reachable(_ base: URL, token: String) async -> Bool {
+        guard EndpointPolicy.allowed(base), !token.isEmpty else { return false }
         var req = URLRequest(url: base.appendingPathComponent("healthz"))
         req.timeoutInterval = 2.5
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

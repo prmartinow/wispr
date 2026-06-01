@@ -99,7 +99,7 @@ final class HUDController {
         case .idle:         return hovering ? NSSize(width: 222, height: 42) : NSSize(width: 72, height: 26)
         case .recording:    return NSSize(width: 330, height: 54)
         case .transcribing: return NSSize(width: 240, height: 46)
-        case .inserted, .copied, .error: return NSSize(width: 300, height: 46)
+        case .inserted, .copied, .available, .error: return NSSize(width: 300, height: 46)
         }
     }
 }
@@ -162,6 +162,8 @@ struct HUDView: View {
             label("checkmark.circle.fill", .green, "inserted")
         case .copied:
             label("doc.on.clipboard", .yellow, "Copied — ⌘V to paste")
+        case .available:
+            label("doc.text", .yellow, "Transcript ready")
         case .error(let message):
             label("exclamationmark.triangle.fill", .orange, message)
         }

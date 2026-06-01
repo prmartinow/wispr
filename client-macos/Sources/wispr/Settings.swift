@@ -13,6 +13,37 @@ enum ActivationMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum EndpointPolicy {
+    static let lanURLString = "https://wispr.local:8443"
+    static let remoteURLString = "https://wispr.p12w.xyz"
+
+    private static let legacyLANURLStrings: Set<String> = [
+        "http://wispr.local:8090",
+        "http://wispr.local:8090",
+    ]
+
+    static func migrateLAN(_ raw: String) -> String {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return legacyLANURLStrings.contains(s) ? lanURLString : s
+    }
+
+    static func allowed(_ url: URL) -> Bool {
+        allowedLAN(url) || allowedRemote(url)
+    }
+
+    static func allowedLAN(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+            && url.host?.lowercased() == "wispr.local"
+            && (url.port ?? 443) == 8443
+    }
+
+    static func allowedRemote(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+            && url.host?.lowercased() == "wispr.p12w.xyz"
+            && (url.port ?? 443) == 443
+    }
+}
+
 /// Persisted user settings. Scalars live in UserDefaults; the bearer token lives in the
 /// Keychain. Initial values fall back to env vars (WISPR_SERVER_URL / WISPR_TOKEN)
 /// then to the LAN defaults, so the app works out of the box and is configurable in the UI.
@@ -40,11 +71,17 @@ final class Settings: ObservableObject {
 
     init() {
         let env = ProcessInfo.processInfo.environment
-        let initialServer = d.string(forKey: K.serverURL)
-            ?? env["WISPR_SERVER_URL"] ?? "http://wispr.local:8090"
+        let initialServer = EndpointPolicy.migrateLAN(d.string(forKey: K.serverURL)
+            ?? env["WISPR_SERVER_URL"] ?? EndpointPolicy.lanURLString)
+        if d.string(forKey: K.serverURL) != initialServer {
+            d.set(initialServer, forKey: K.serverURL)
+        }
         serverURLString = initialServer
-        remoteURLString = d.string(forKey: K.remoteURL) ?? env["WISPR_REMOTE_URL"] ?? "https://wispr.p12w.xyz"
-        activeServerURL = URL(string: initialServer) ?? URL(string: "http://wispr.local:8090")!
+        remoteURLString = d.string(forKey: K.remoteURL) ?? env["WISPR_REMOTE_URL"] ?? EndpointPolicy.remoteURLString
+        let parsedInitial = URL(string: initialServer)
+        let initialURL = parsedInitial.flatMap { EndpointPolicy.allowedLAN($0) ? $0 : nil }
+            ?? URL(string: EndpointPolicy.lanURLString)!
+        activeServerURL = initialURL
         activation = ActivationMode(rawValue: d.string(forKey: K.activation) ?? "") ?? .toggle
         // Default ⌘⇧1: ⌘⌥Space collides with Finder's "Search This Mac"; ⌘⇧1/2 are unbound
         // (screenshot shortcuts are ⌘⇧3/4/5). keyCode 18 = "1".
@@ -58,13 +95,16 @@ final class Settings: ObservableObject {
     }
 
     var serverURL: URL {
-        URL(string: serverURLString) ?? URL(string: "http://wispr.local:8090")!
+        let migrated = EndpointPolicy.migrateLAN(serverURLString)
+        if let url = URL(string: migrated), EndpointPolicy.allowedLAN(url) { return url }
+        return URL(string: EndpointPolicy.lanURLString)!
     }
 
     /// Optional off-LAN endpoint (e.g. https://wispr.p12w.xyz), reached over mTLS.
     var remoteURL: URL? {
         let s = remoteURLString.trimmingCharacters(in: .whitespaces)
-        return s.isEmpty ? nil : URL(string: s)
+        guard !s.isEmpty, let url = URL(string: s), EndpointPolicy.allowedRemote(url) else { return nil }
+        return url
     }
 
     var modifierFlags: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: hotKeyModifiers) }
@@ -85,11 +125,28 @@ enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(base as CFDictionary)
-        guard !value.isEmpty else { return }
+        guard !value.isEmpty else {
+            SecItemDelete(base as CFDictionary)
+            return
+        }
+
+        let attrs: [String: Any] = [
+            kSecValueData as String: Data(value.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
+        let update = SecItemUpdate(base as CFDictionary, attrs as CFDictionary)
+        if update == errSecSuccess { return }
+        guard update == errSecItemNotFound else {
+            Log.log("keychain: update failed account=\(account) status=\(update)")
+            return
+        }
+
         var add = base
-        add[kSecValueData as String] = Data(value.utf8)
-        SecItemAdd(add as CFDictionary, nil)
+        add.merge(attrs) { _, new in new }
+        let added = SecItemAdd(add as CFDictionary, nil)
+        if added != errSecSuccess {
+            Log.log("keychain: add failed account=\(account) status=\(added)")
+        }
     }
 
     static func get(account: String) -> String? {

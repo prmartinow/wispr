@@ -26,6 +26,19 @@ Rules:
 
 ## Log
 
+### 2026-06-01 — mac/server agent (production hardening pass 2)
+- **LAN is now direct HTTPS/mTLS:** normal Mac traffic should use `https://wispr.local:8443`
+  / `wss://wispr.local:8443/v1/stream`. Remote remains `https://wispr.p12w.xyz`. The old plaintext
+  LAN default migrates client-side.
+- **Audio resource bounds:** streaming and batch both allow full clips up to 10 minutes. Batch uploads
+  are streamed to a private temp file, validated as RIFF/WAV mono 16-bit 48 kHz PCM, and rejected before
+  playback if malformed/too large. The server no longer queues long batch jobs while busy.
+- **Retry/paste privacy:** busy/offline/backend failures save the full clip locally for retry. Recovered
+  retry transcripts go to History + last transcript without overwriting the clipboard. Paste now captures
+  app/window/field before recording, verifies immediately before insertion, tries direct AX insert first,
+  and restores the prior clipboard after a confirmed paste fallback.
+- **Deferred:** VNC/noVNC access is intentionally unchanged pending a separate low-latency access design.
+
 ### 2026-06-01 — mac/server agent (security hardening pass)
 - **Remote mTLS repaired + pinned:** imported the `mac-pierre` client identity on the Mac and changed the
   client to present a cert only for `wispr.p12w.xyz`, pinned by subject, issuer, leaf SHA-256 fingerprint,

@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 
 /// Accessibility helpers for paste targeting + verification (Scenario 1, hardened).
@@ -5,12 +6,60 @@ import ApplicationServices
 /// (e.g. Electron editors) and silently skipped the paste. Instead we always attempt the
 /// paste and then **confirm** it by reading the field's value back.
 enum FocusedField {
+    struct PasteTarget {
+        let appPID: pid_t
+        let bundleIdentifier: String?
+        let elementPID: pid_t?
+        let role: String
+        let windowTitle: String?
+    }
+
+    static func capture(frontmost app: NSRunningApplication?) -> PasteTarget? {
+        let focused = focusedElement()
+        return PasteTarget(
+            appPID: app?.processIdentifier ?? focused.flatMap { pid(of: $0) } ?? 0,
+            bundleIdentifier: app?.bundleIdentifier,
+            elementPID: focused.flatMap { pid(of: $0) },
+            role: focused.map { role($0) } ?? "",
+            windowTitle: focused.flatMap { windowTitle(of: $0) }
+        )
+    }
+
     static func focusedElement() -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let f = focused, CFGetTypeID(f) == AXUIElementGetTypeID() else { return nil }
         return (f as! AXUIElement)
+    }
+
+    static func refocus(_ target: PasteTarget?) {
+        guard let target, target.appPID > 0,
+              let app = NSRunningApplication(processIdentifier: target.appPID),
+              app != NSWorkspace.shared.frontmostApplication else { return }
+        app.activate(options: [.activateIgnoringOtherApps])
+    }
+
+    static func matchesCurrent(_ target: PasteTarget?) -> Bool {
+        guard let target, target.appPID > 0 else { return false }
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier == target.appPID else { return false }
+        if let expectedBundle = target.bundleIdentifier,
+           front.bundleIdentifier != expectedBundle { return false }
+        guard let current = focusedElement() else { return false }
+        if let expectedPID = target.elementPID, pid(of: current) != expectedPID { return false }
+        if !target.role.isEmpty, role(current) != target.role { return false }
+        if let expectedTitle = target.windowTitle,
+           let currentTitle = windowTitle(of: current),
+           !expectedTitle.isEmpty,
+           !currentTitle.isEmpty,
+           expectedTitle != currentTitle { return false }
+        return true
+    }
+
+    static func insertDirect(_ text: String) -> Bool {
+        guard let el = focusedElement() else { return false }
+        return AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, text as CFString) == .success
     }
 
     static func role(_ el: AXUIElement) -> String {
@@ -28,6 +77,21 @@ enum FocusedField {
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success else { return nil }
         return v as? String
+    }
+
+    static func pid(of el: AXUIElement) -> pid_t? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(el, &pid) == .success, pid > 0 else { return nil }
+        return pid
+    }
+
+    static func windowTitle(of el: AXUIElement) -> String? {
+        var window: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXWindowAttribute as CFString, &window) == .success,
+              let w = window, CFGetTypeID(w) == AXUIElementGetTypeID() else { return nil }
+        var title: CFTypeRef?
+        guard AXUIElementCopyAttributeValue((w as! AXUIElement), kAXTitleAttribute as CFString, &title) == .success else { return nil }
+        return title as? String
     }
 
     static func valueLength(_ el: AXUIElement?) -> Int? {

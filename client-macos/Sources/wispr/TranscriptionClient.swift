@@ -5,6 +5,7 @@ struct TranscriptionResult: Decodable {
     let text: String
     let engine: String?
     let duration_ms: Int?
+    let audio_duration_ms: Int?
 }
 
 struct ServerError: Decodable {
@@ -26,9 +27,11 @@ final class TranscriptionClient {
 
     /// Batch transcription of in-memory WAV bytes (used as the streaming fallback).
     func transcribe(wav audio: Data) async throws -> String {
+        guard EndpointPolicy.allowed(settings.activeServerURL) else { throw ClientError.badEndpoint }
         let endpoint = settings.activeServerURL.appendingPathComponent("transcribe")
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
+        req.timeoutInterval = 780
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
 
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -55,6 +58,7 @@ final class TranscriptionClient {
 
     /// Lightweight reachability/auth probe for the Settings "Test" button.
     func health() async -> String {
+        guard EndpointPolicy.allowed(settings.activeServerURL) else { return "bad endpoint" }
         let endpoint = settings.activeServerURL.appendingPathComponent("healthz")
         var req = URLRequest(url: endpoint)
         req.timeoutInterval = 6
@@ -70,6 +74,7 @@ final class TranscriptionClient {
     }
 
     enum ClientError: Error {
+        case badEndpoint
         case badResponse
         case http(status: Int)
         case server(code: String, message: String)

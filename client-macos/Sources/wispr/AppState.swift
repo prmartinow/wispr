@@ -7,6 +7,7 @@ enum DictationPhase: Equatable {
     case transcribing
     case inserted
     case copied        // transcript on the clipboard; no editable field was focused (Scenario 1)
+    case available     // transcript is in History/last-transcript but clipboard was not overwritten
     case error(String)
 }
 

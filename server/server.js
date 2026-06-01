@@ -1,11 +1,15 @@
 'use strict';
 // wispr transcription service — implements contract/transcribe.md.
-// Backend is pluggable: transcribe() returns stub text now; swap it for the
-// dictation service web-dictation driver later without touching routing/auth. Zero deps.
+// Batch uploads are streamed to a private temp file, validated as bounded WAV,
+// then serialized onto the single dictation service dictation backend.
 
-const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
+const os = require('os');
 const path = require('path');
+const Busboy = require('busboy');
 const dictate = require('./dictate');
 const { WebSocketServer } = require('ws');
 const { spawn } = require('child_process');
@@ -22,11 +26,33 @@ function loadEnv(p) {
   return out;
 }
 const env = loadEnv(path.join(__dirname, '.env'));
-const TOKEN = process.env.WISPR_BEARER_TOKEN || env.WISPR_BEARER_TOKEN || '';
-const PORT = Number(process.env.PORT || env.PORT || 8080);
-const HOST = '0.0.0.0'; // both LAN subnets (wispr.local and wispr.local)
+const cfg = (name, fallback = '') => process.env[name] || env[name] || fallback;
+const numCfg = (name, fallback) => {
+  const n = Number(cfg(name, ''));
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+const TOKEN = cfg('WISPR_BEARER_TOKEN');
+const HTTP_PORT = numCfg('PORT', 8090);
+const HTTP_HOST = cfg('HOST', '0.0.0.0'); // reached by VPS Caddy/WG and legacy LAN clients.
+const HTTPS_PORT = numCfg('LAN_TLS_PORT', 8443);
+const HTTPS_HOST = cfg('LAN_TLS_HOST', '0.0.0.0');
+const LAN_TLS_KEY = cfg('LAN_TLS_KEY', '~/.wispr/mtls/rpc-server.key');
+const LAN_TLS_CERT = cfg('LAN_TLS_CERT', '~/.wispr/mtls/rpc-server.crt');
+const LAN_TLS_CA = cfg('LAN_TLS_CA', '~/.wispr/mtls/ca.crt');
+const REQUIRE_LAN_MTLS = /^(1|true|yes)$/i.test(cfg('REQUIRE_LAN_MTLS', '0'));
+const CLIENT_CERT_SHA256 = new Set(
+  cfg('MTLS_CLIENT_CERT_SHA256', '')
+    .split(',')
+    .map(s => s.replace(/[^0-9a-f]/gi, '').toUpperCase())
+    .filter(Boolean)
+);
+
 const ENGINE = 'dictation-service';
 const DEVTOOLS = 'http://127.0.0.1:9223/json/version'; // the dedicated dictation service service browser
+
+const MAX_AUDIO_SECONDS = numCfg('MAX_AUDIO_SECONDS', 600);
+const BATCH_UPLOAD_MAX_BYTES = numCfg('BATCH_UPLOAD_MAX_BYTES', 64 * 1024 * 1024);
 
 if (!TOKEN) {
   console.error('[wispr-server] refusing to start: no WISPR_BEARER_TOKEN (server/.env)');
@@ -41,9 +67,48 @@ function sendJson(res, status, obj) {
 }
 const sendErr = (res, status, code, message) => sendJson(res, status, { error: { code, message } });
 
+function makeHttpError(status, code, message) {
+  const e = new Error(message);
+  e.status = status;
+  e.code = code;
+  return e;
+}
+
+function statusForError(e) {
+  if (e.status) return e.status;
+  switch (e.code) {
+    case 'busy':
+    case 'overloaded':
+      return 409;
+    case 'bad_request':
+    case 'invalid_audio':
+      return 400;
+    case 'audio_too_large':
+      return 413;
+    case 'transcription_timeout':
+      return 504;
+    default:
+      return 503;
+  }
+}
+
+function safeEqual(a, b) {
+  const aa = Buffer.from(String(a || ''), 'utf8');
+  const bb = Buffer.from(String(b || ''), 'utf8');
+  if (aa.length !== bb.length) return false;
+  return crypto.timingSafeEqual(aa, bb);
+}
+
 function bearerOk(req) {
   const m = /^Bearer\s+(.+)$/i.exec(req.headers['authorization'] || '');
-  return !!m && m[1] === TOKEN;
+  return !!m && safeEqual(m[1], TOKEN);
+}
+
+function tlsClientOk(req) {
+  if (!req.socket.encrypted || CLIENT_CERT_SHA256.size === 0) return true;
+  const cert = req.socket.getPeerCertificate();
+  const fp = String(cert && cert.fingerprint256 || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+  return !!fp && CLIENT_CERT_SHA256.has(fp);
 }
 
 // --- health monitor: a cached snapshot so /healthz is instant and never disturbs dictation ---
@@ -75,45 +140,139 @@ async function refreshHealth() {
 setInterval(() => refreshHealth().catch(() => {}), 20000);
 refreshHealth().catch(() => {});
 
-function readBody(req, maxBytes = 25 * 1024 * 1024) {
+function rmrf(p) {
+  try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {}
+}
+
+function receiveAudioFile(req) {
   return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    req.on('data', (c) => {
-      size += c.length;
-      if (size > maxBytes) { req.destroy(); reject(Object.assign(new Error('too large'), { tooLarge: true })); return; }
-      chunks.push(c);
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wispr-upload-'));
+    fs.chmodSync(tmpDir, 0o700);
+    const filePath = path.join(tmpDir, 'audio.wav');
+    let audioSeen = false;
+    let bytes = 0;
+    let writeDone = Promise.resolve();
+    let settled = false;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      req.unpipe();
+      req.resume();
+      rmrf(tmpDir);
+      reject(err);
+    };
+
+    let bb;
+    try {
+      bb = Busboy({
+        headers: req.headers,
+        limits: { files: 1, fields: 0, parts: 1, fileSize: BATCH_UPLOAD_MAX_BYTES }
+      });
+    } catch (e) {
+      rmrf(tmpDir);
+      reject(makeHttpError(400, 'bad_request', 'invalid multipart/form-data'));
+      return;
+    }
+
+    bb.on('file', (name, stream) => {
+      if (name !== 'audio' || audioSeen) {
+        stream.resume();
+        fail(makeHttpError(400, 'bad_request', 'expected exactly one audio file part'));
+        return;
+      }
+      audioSeen = true;
+      const out = fs.createWriteStream(filePath, { flags: 'wx', mode: 0o600 });
+      writeDone = new Promise((res, rej) => {
+        out.on('finish', res);
+        out.on('error', rej);
+      });
+      stream.on('data', chunk => { bytes += chunk.length; });
+      stream.on('limit', () => fail(makeHttpError(413, 'audio_too_large', 'audio upload exceeds 10-minute batch limit')));
+      stream.on('error', fail);
+      stream.pipe(out);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+
+    bb.on('field', () => fail(makeHttpError(400, 'bad_request', 'unexpected form field')));
+    bb.on('filesLimit', () => fail(makeHttpError(400, 'bad_request', 'too many file parts')));
+    bb.on('fieldsLimit', () => fail(makeHttpError(400, 'bad_request', 'unexpected form field')));
+    bb.on('partsLimit', () => fail(makeHttpError(400, 'bad_request', 'too many multipart parts')));
+    bb.on('error', fail);
+    bb.on('close', async () => {
+      if (settled) return;
+      try {
+        await writeDone;
+        if (!audioSeen || bytes === 0) throw makeHttpError(400, 'bad_request', 'missing or empty audio part');
+        settled = true;
+        resolve({ tmpDir, filePath, bytes });
+      } catch (e) {
+        rmrf(tmpDir);
+        reject(e);
+      }
+    });
+    req.pipe(bb);
   });
 }
 
-// Minimal multipart/form-data extraction of the first part's bytes (the "audio"
-// field). Both the macOS client and contract-test.sh send exactly one part.
-function extractAudio(buf, contentType) {
-  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || '');
-  if (!m) return null;
-  const bb = Buffer.from('--' + (m[1] || m[2]).trim());
-  const start = buf.indexOf(bb);
-  if (start < 0) return null;
-  const headerEnd = buf.indexOf('\r\n\r\n', start);
-  if (headerEnd < 0) return null;
-  const bodyStart = headerEnd + 4;
-  const next = buf.indexOf(bb, bodyStart);
-  if (next < 0) return null;
-  return buf.slice(bodyStart, next - 2); // drop the trailing CRLF before the boundary
-}
+const riff = b => b.toString('ascii');
+const u16 = (b, o) => b.readUInt16LE(o);
+const u32 = (b, o) => b.readUInt32LE(o);
 
-// --- transcription backend: dictation service web dictation (see dictate.js) ----------
-async function transcribe(audioBuf) {
-  return dictate.transcribe(audioBuf);
+function validateWavFile(filePath) {
+  const st = fs.statSync(filePath);
+  if (st.size > BATCH_UPLOAD_MAX_BYTES) throw makeHttpError(413, 'audio_too_large', 'audio upload exceeds 10-minute batch limit');
+  if (st.size < 44) throw makeHttpError(400, 'invalid_audio', 'WAV is too small');
+  const b = fs.readFileSync(filePath);
+  if (riff(b.subarray(0, 4)) !== 'RIFF' || riff(b.subarray(8, 12)) !== 'WAVE') {
+    throw makeHttpError(400, 'invalid_audio', 'expected RIFF/WAVE audio');
+  }
+
+  let fmt = null;
+  let dataBytes = 0;
+  let off = 12;
+  while (off + 8 <= b.length) {
+    const id = riff(b.subarray(off, off + 4));
+    const size = u32(b, off + 4);
+    const body = off + 8;
+    const next = body + size + (size % 2);
+    if (body + size > b.length) throw makeHttpError(400, 'invalid_audio', 'truncated WAV chunk');
+    if (id === 'fmt ') {
+      if (size < 16) throw makeHttpError(400, 'invalid_audio', 'invalid WAV fmt chunk');
+      fmt = {
+        audioFormat: u16(b, body),
+        channels: u16(b, body + 2),
+        sampleRate: u32(b, body + 4),
+        byteRate: u32(b, body + 8),
+        blockAlign: u16(b, body + 12),
+        bitsPerSample: u16(b, body + 14)
+      };
+    } else if (id === 'data') {
+      dataBytes = size;
+      break;
+    }
+    off = next;
+  }
+
+  if (!fmt || !dataBytes) throw makeHttpError(400, 'invalid_audio', 'WAV missing fmt or data chunk');
+  if (fmt.audioFormat !== 1) throw makeHttpError(400, 'invalid_audio', 'WAV must be PCM');
+  if (fmt.channels !== 1) throw makeHttpError(400, 'invalid_audio', 'WAV must be mono');
+  if (fmt.bitsPerSample !== 16) throw makeHttpError(400, 'invalid_audio', 'WAV must be 16-bit PCM');
+  if (fmt.sampleRate !== 48000) throw makeHttpError(400, 'invalid_audio', 'WAV must be 48 kHz');
+  if (fmt.blockAlign !== 2 || fmt.byteRate !== 96000) throw makeHttpError(400, 'invalid_audio', 'WAV byte rate/block alignment mismatch');
+
+  const durationMs = Math.round((dataBytes / fmt.byteRate) * 1000);
+  if (!Number.isFinite(durationMs) || durationMs <= 0) throw makeHttpError(400, 'invalid_audio', 'WAV contains no audio');
+  if (durationMs > MAX_AUDIO_SECONDS * 1000) throw makeHttpError(413, 'audio_too_large', `audio exceeds ${MAX_AUDIO_SECONDS}s max duration`);
+  return { durationMs, dataBytes, sampleRate: fmt.sampleRate };
 }
 
 // --- routing ----------------------------------------------------------------
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
+  let uploaded = null;
   try {
     const url = req.url.split('?')[0];
+
+    if (!tlsClientOk(req)) return sendErr(res, 401, 'unauthorized', 'untrusted client certificate');
 
     if (req.method === 'GET' && url === '/healthz') {
       if (!bearerOk(req)) return sendErr(res, 401, 'unauthorized', 'missing or invalid bearer token');
@@ -127,41 +286,46 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url === '/transcribe') {
       if (!bearerOk(req)) return sendErr(res, 401, 'unauthorized', 'missing or invalid bearer token');
+      if (dictate.isBusy()) return sendErr(res, 409, 'busy', 'dictation backend is busy; retry shortly');
       const ct = req.headers['content-type'] || '';
       if (!/^multipart\/form-data/i.test(ct)) return sendErr(res, 415, 'unsupported_media_type', 'expected multipart/form-data');
-      let body;
-      try { body = await readBody(req); }
-      catch (e) { if (e.tooLarge) return sendErr(res, 400, 'bad_request', 'audio too large'); throw e; }
-      const audio = extractAudio(body, ct);
-      if (!audio || audio.length === 0) return sendErr(res, 400, 'bad_request', 'missing or empty audio part');
+
+      uploaded = await receiveAudioFile(req);
+      const audio = validateWavFile(uploaded.filePath);
       const t0 = Date.now();
       let text;
-      try { text = await transcribe(audio); }
-      catch (e) { return sendErr(res, 503, e.code || 'backend_unavailable', String(e.message || e)); }
+      try { text = await dictate.transcribeFile(uploaded.filePath, audio); }
+      catch (e) { return sendErr(res, statusForError(e), e.code || 'backend_unavailable', String(e.message || e)); }
       if (!text) return sendErr(res, 504, 'transcription_timeout', 'dictation produced no text');
-      return sendJson(res, 200, { text, engine: ENGINE, duration_ms: Date.now() - t0 });
+      return sendJson(res, 200, { text, engine: ENGINE, duration_ms: Date.now() - t0, audio_duration_ms: audio.durationMs });
     }
 
     return sendErr(res, 404, 'not_found', `no route for ${req.method} ${url}`);
   } catch (e) {
-    sendErr(res, 500, 'internal', e.message || 'error');
+    sendErr(res, statusForError(e), e.code || 'internal', e.message || 'error');
+  } finally {
+    if (uploaded) rmrf(uploaded.tmpDir);
   }
-});
+}
 
 // --- WebSocket /v1/stream: live PCM dictation (start -> binary PCM -> stop -> final) ---------
 const HEARTBEAT_MS = 10000;   // ws ping cadence; a missed pong terminates the socket
 const STREAM_IDLE_MS = 25000; // a started stream with no audio this long -> free the mic
-const STREAM_MAX_MS = 600000; // hard cap on one stream (10 min) -> free the mic
+const STREAM_MAX_MS = MAX_AUDIO_SECONDS * 1000; // hard cap on one stream -> free the mic
 const STREAM_START_MS = 10000; // socket opened but no start -> close it
 const STREAM_MAX_FRAME_BYTES = 256 * 1024;
 const STREAM_MAX_PRE_READY_BYTES = 2 * 1024 * 1024;
-const STREAM_MAX_BYTES = 48000 * 2 * 600; // 10 minutes of s16le/48k/mono
-const wss = new WebSocketServer({ noServer: true });
-server.on('upgrade', (req, socket, head) => {
-  if (req.url.split('?')[0] !== '/v1/stream') { socket.destroy(); return; }
-  if (!bearerOk(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
-  wss.handleUpgrade(req, socket, head, ws => handleStream(ws));
-});
+const STREAM_MAX_BYTES = 48000 * 2 * MAX_AUDIO_SECONDS; // s16le/48k/mono
+const wss = new WebSocketServer({ noServer: true, maxPayload: STREAM_MAX_FRAME_BYTES });
+
+function attachUpgrade(srv) {
+  srv.on('upgrade', (req, socket, head) => {
+    if (req.url.split('?')[0] !== '/v1/stream') { socket.destroy(); return; }
+    if (!tlsClientOk(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+    if (!bearerOk(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, ws => handleStream(ws));
+  });
+}
 
 function handleStream(ws) {
   let startP = null, session = null, stopped = false, lastActivity = Date.now(), openedAt = Date.now(), startedAt = 0, alive = true;
@@ -223,6 +387,37 @@ function handleStream(ws) {
   ws.on('error', () => {});
 }
 
-server.listen(PORT, HOST, () => {
-  console.log(`[wispr-server] engine=${ENGINE} listening on ${HOST}:${PORT} (POST /transcribe + WS /v1/stream)`);
+function loadLanTlsOptions() {
+  const files = [LAN_TLS_KEY, LAN_TLS_CERT, LAN_TLS_CA];
+  if (!files.every(p => p && fs.existsSync(p))) {
+    if (REQUIRE_LAN_MTLS) {
+      console.error(`[wispr-server] refusing to start: LAN mTLS files missing (${files.join(', ')})`);
+      process.exit(1);
+    }
+    console.warn('[wispr-server] LAN mTLS disabled: key/cert/CA files not found');
+    return null;
+  }
+  return {
+    key: fs.readFileSync(LAN_TLS_KEY),
+    cert: fs.readFileSync(LAN_TLS_CERT),
+    ca: fs.readFileSync(LAN_TLS_CA),
+    requestCert: true,
+    rejectUnauthorized: true,
+    minVersion: 'TLSv1.2'
+  };
+}
+
+const httpServer = http.createServer(handleRequest);
+attachUpgrade(httpServer);
+httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
+  console.log(`[wispr-server] engine=${ENGINE} HTTP listening on ${HTTP_HOST}:${HTTP_PORT}`);
 });
+
+const lanTlsOptions = loadLanTlsOptions();
+if (lanTlsOptions) {
+  const httpsServer = https.createServer(lanTlsOptions, handleRequest);
+  attachUpgrade(httpsServer);
+  httpsServer.listen(HTTPS_PORT, HTTPS_HOST, () => {
+    console.log(`[wispr-server] engine=${ENGINE} LAN mTLS listening on ${HTTPS_HOST}:${HTTPS_PORT}`);
+  });
+}

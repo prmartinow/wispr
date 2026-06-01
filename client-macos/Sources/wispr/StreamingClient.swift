@@ -51,6 +51,7 @@ final class StreamingClient {
     /// Open the socket and send `{start}`. Returns immediately; frames may be sent right away
     /// (the server buffers anything that arrives before `ready`).
     func open() throws {
+        guard EndpointPolicy.allowed(settings.activeServerURL) else { throw StreamError.badURL }
         guard var comps = URLComponents(url: settings.activeServerURL, resolvingAgainstBaseURL: false)
         else { throw StreamError.badURL }
         comps.scheme = (comps.scheme == "https") ? "wss" : "ws"
@@ -58,6 +59,7 @@ final class StreamingClient {
         guard let url = comps.url else { throw StreamError.badURL }
 
         var req = URLRequest(url: url)
+        req.timeoutInterval = 780
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
         let t = session.webSocketTask(with: req)
         task = t
@@ -93,6 +95,11 @@ final class StreamingClient {
     /// Send `{stop}` and await the `{final}` transcript.
     func finish() async throws -> String {
         sendText(#"{"type":"stop"}"#)
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.settle(.failure(StreamError.noFinal))
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 180, execute: timeout)
+        defer { timeout.cancel() }
         return try await withCheckedThrowingContinuation { cont in
             if let pending {
                 resume(with: pending, cont: cont)

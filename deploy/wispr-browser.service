@@ -11,6 +11,20 @@ Environment=CHROME_DEVEL_SANDBOX=/mnt/data/takeout-browser-profile/ms-playwright
 ExecStart=/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-linux64/chrome --user-data-dir=~/.wispr/profiles/service --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --no-first-run --no-default-browser-check --disable-dev-shm-usage --use-fake-ui-for-media-stream DICTATION_SERVICE_URL/
 Restart=always
 RestartSec=5
+UMask=0077
+ProtectSystem=full
+ProtectHome=read-only
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=~/.wispr/profiles/service /run/user/1000 /tmp
+InaccessiblePaths=-~/.wispr/mtls -~/dev/wispr/server/.env
 
 [Install]
 WantedBy=default.target

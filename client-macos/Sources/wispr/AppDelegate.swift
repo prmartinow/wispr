@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var idleWork: DispatchWorkItem?
     private var retrying = false
-    private var pasteTargetApp: NSRunningApplication?
+    private var pasteTarget: FocusedField.PasteTarget?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hud = HUDController(state: appState,
@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .transcribing: (symbol, tint) = ("waveform", .systemYellow)
         case .inserted:     (symbol, tint) = ("checkmark.circle.fill", .systemGreen)
         case .copied:       (symbol, tint) = ("doc.on.clipboard.fill", .systemYellow)
+        case .available:    (symbol, tint) = ("doc.text.fill", .systemYellow)
         case .error:        (symbol, tint) = ("exclamationmark.triangle.fill", .systemOrange)
         }
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "wispr")
@@ -149,10 +150,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startRecording() {
         guard !appState.isBusy else { return }
         idleWork?.cancel()
-        pasteTargetApp = NSWorkspace.shared.frontmostApplication // where to paste back into
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        pasteTarget = FocusedField.capture(frontmost: frontmost)
         capture.onMeter = { [weak self] level, elapsed in
             self?.appState.level = level
             self?.appState.elapsed = elapsed
+        }
+        capture.onLimitReached = { [weak self] in
+            guard let self, self.appState.phase == .recording else { return }
+            Log.log("record: 10-minute cap reached; stopping automatically")
+            self.stopAndTranscribe()
         }
         let s = StreamingClient(settings: settings)
         capture.onFrame = { [weak s] frame in s?.sendFrame(frame) }
@@ -234,28 +241,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Paste, then **confirm it landed** (Scenario 1, hardened). Always attempt the paste;
-    /// re-focus the app we recorded from if our HUD took front; verify by reading the field's
-    /// value back. If unconfirmed, keep it on the clipboard and show the "⌘V to paste" hint.
+    /// Paste, then confirm it landed. The target app/window/field was captured before
+    /// recording; if it changed, leave the transcript on the clipboard for manual paste.
     @MainActor
     private func deliver(_ text: String) async {
         history.add(text)
         appState.lastTranscript = text
         refreshMenu()
-        TextInserter.copy(text)
 
-        // If clicking the HUD (or anything) took front, bring the original app back first.
-        if let app = pasteTargetApp, app != NSWorkspace.shared.frontmostApplication {
-            app.activate(options: [.activateIgnoringOtherApps])
-            try? await Task.sleep(nanoseconds: 140_000_000)
+        FocusedField.refocus(pasteTarget)
+        try? await Task.sleep(nanoseconds: 140_000_000)
+
+        guard FocusedField.matchesCurrent(pasteTarget) else {
+            TextInserter.copy(text)
+            appState.phase = .copied
+            Log.log("deliver: target changed — copied transcript for manual paste")
+            pasteTarget = nil
+            scheduleIdle(after: 8)
+            return
         }
 
         let el = FocusedField.focusedElement()
         let before = FocusedField.valueLength(el)
-        TextInserter.pasteKeystroke()
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        var confirmed = false
 
-        if FocusedField.confirmInserted(el, expected: text, before: before) {
+        if FocusedField.insertDirect(text) {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            confirmed = true
+            let verified = FocusedField.confirmInserted(el, expected: text, before: before)
+            Log.log("deliver: direct AX insert \(verified ? "confirmed" : "accepted") (\(text.count) chars)")
+        }
+
+        if !confirmed {
+            let snapshot = PasteboardSnapshot.capture()
+            TextInserter.copy(text)
+            TextInserter.pasteKeystroke()
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            confirmed = FocusedField.confirmInserted(el, expected: text, before: before)
+            if confirmed {
+                snapshot.restore(ifPasteboardStillContains: text)
+            }
+        }
+
+        pasteTarget = nil
+        if confirmed {
             appState.phase = .inserted
             Log.log("deliver: paste CONFIRMED (\(text.count) chars)")
             scheduleIdle(after: 0.4) // confirmed → return to interactive immediately (re-record fast)
@@ -284,7 +313,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         if !text.isEmpty {
                             self.history.add(text)
                             self.appState.lastTranscript = text
-                            TextInserter.copy(text)
                             recovered.n += 1
                         }
                         self.pending.remove(item)
@@ -300,8 +328,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.retrying = false
                 self.refreshMenu()
                 if recovered.n > 0, !self.appState.isBusy {
-                    Log.log("retry: recovered \(recovered.n) → last on clipboard + History")
-                    self.appState.phase = .copied
+                    Log.log("retry: recovered \(recovered.n) → History + last transcript")
+                    self.appState.phase = .available
                     self.scheduleIdle(after: 4)
                 }
             }
@@ -357,8 +385,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pasteAfterFocus(_ text: String) {
         guard !text.isEmpty else { return }
         historyWindow?.orderOut(nil)
+        let snapshot = PasteboardSnapshot.capture()
         TextInserter.copy(text)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { TextInserter.insert(text) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            TextInserter.pasteKeystroke()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                snapshot.restore(ifPasteboardStillContains: text)
+            }
+        }
     }
 
     private func reconfigureHotKey() {

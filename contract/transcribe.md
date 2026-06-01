@@ -2,9 +2,10 @@
 
 Jointly owned. Change only via commit + an entry in `../COORDINATION.md`.
 
-- **Base URL (LAN):** `http://wispr.local:8090`  ·  *(moved off 8080 — reserved for Nextcloud on this box)*
-- **Auth:** `Authorization: Bearer <token>` — token lives in `server/.env` on the server
-  (gitignored). Fetch over SSH; never commit it.
+- **Base URL (LAN):** `https://wispr.local:8443`
+- **Base URL (remote):** `https://wispr.p12w.xyz`
+- **Auth:** required client cert (mTLS) plus `Authorization: Bearer <token>`.
+  The token lives in `server/.env` on the server (gitignored). Fetch over SSH; never commit it.
 
 ## Request
 ```
@@ -13,24 +14,22 @@ Authorization: Bearer <token>
 Content-Type: multipart/form-data
   audio = <WAV file, binary>      # form field name: "audio"
 ```
-Audio (v0 target — server normalizes via ffmpeg, so some slack is fine):
+Audio:
 - Container: WAV (RIFF)
 - Channels: mono
 - Sample format: 16-bit PCM
-- Sample rate: 16000 or 48000 Hz
-- Length: ≤ 30 s for the prototype
+- Sample rate: 48000 Hz
+- Length: ≤ 10 minutes
 
-**What the macOS client actually sends** (resolved 2026-05-30 — was an open question):
-RIFF WAV, **mono, 16-bit PCM, 48000 Hz**, written by `AVAudioRecorder`. This is inside the
-accepted set above **and** matches the server's validated fake-mic clip
-(`ffmpeg -ac 1 -ar 48000 -sample_fmt s16`), so the server can feed the upload straight to
-Chromium's `--use-file-for-fake-audio-capture` with **no transcode**.
+The macOS client sends RIFF WAV, **mono, 16-bit PCM, 48000 Hz**. The server streams the upload to a
+private temp file, validates the WAV header/duration before playback, and then feeds it to the
+PulseAudio virtual mic.
 
 ## Response — 200 `application/json`
 ```json
-{ "text": "transcribed text", "engine": "stub", "duration_ms": 0 }
+{ "text": "transcribed text", "engine": "dictation-service", "duration_ms": 0, "audio_duration_ms": 0 }
 ```
-`engine` is `"stub"` until the dictation driver lands, then `"dictation-service"`.
+`duration_ms` is wall-clock server time; `audio_duration_ms` is the validated WAV duration.
 
 ## Errors — `application/json`
 ```json
@@ -39,8 +38,10 @@ Chromium's `--use-file-for-fake-audio-capture` with **no transcode**.
 | Status | code | When |
 |---|---|---|
 | 401 | `unauthorized` | missing/invalid bearer token |
-| 400 | `bad_request` | missing/empty/undecodable audio |
-| 415 | `unsupported_media_type` | body is not WAV |
+| 400 | `bad_request` / `invalid_audio` | missing/empty/malformed or wrong-format audio |
+| 409 | `busy` | one dictation is already in flight |
+| 413 | `audio_too_large` | upload/duration exceeds the 10-minute cap |
+| 415 | `unsupported_media_type` | body is not multipart/form-data |
 | 503 | `backend_unavailable` | Chromium/dictation not ready |
 | 504 | `transcription_timeout` | dictation didn't settle in time |
 
@@ -62,17 +63,19 @@ Authorization: Bearer <token>
 ```
 Bad or missing token returns `401 unauthorized`, same as `/transcribe`.
 **Client guidance:** probe `/healthz` to pick a reachable endpoint (LAN vs remote) and to decide
-send-vs-buffer. `dictationService:"logged_out"` → backend needs re-login (don't retry blindly).
+send-vs-buffer. `busy:true` means save locally and retry later; do not queue long work server-side.
+`dictationService:"logged_out"` → backend needs re-login (don't retry blindly).
 `internet:"down"` or unreachable → buffer locally and retry when `/readyz` is 200.
 
 ## Backend notes (server-internal — client must not depend on these)
 - Transcription = dictation service web **dictation** driven through Chromium. See
   `../chatbot-dictation-investigation.md`. Consequences the client should expect:
-  **latency ≈ clip length**, and requests are **serialized** (one composer).
+  **latency ≈ clip length**, and requests are **serialized** (one composer, no long queue).
 - Swappable to a local STT engine later **without changing this contract**.
 
 ## Resolved
 - Native macOS record format → pinned above: WAV / mono / 16-bit PCM / 48000 Hz. No transcode needed.
+- LAN transport → direct HTTPS/mTLS on `wispr.local:8443`.
 - Text insertion (client-internal, server-irrelevant): pasteboard + synthesized ⌘V via
   CGEvent; requires the app to hold macOS Accessibility permission.
 

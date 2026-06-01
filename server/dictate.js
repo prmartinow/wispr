@@ -15,18 +15,12 @@ const SINK = process.env.DICTATE_SINK || 'virtmic';
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// --- single-flight mutex (one composer + one mic), bounded queue ------------
-const MAX_QUEUE = 8;
-let _busy = false; const _q = [];
-function acquire() {
-  return new Promise((res, rej) => {
-    if (_busy && _q.length >= MAX_QUEUE) { rej(Object.assign(new Error('server overloaded; try again shortly'), { code: 'overloaded' })); return; }
-    const t = () => { _busy = true; res(); };
-    _busy ? _q.push(t) : t();
-  });
-}
+// --- single-flight mutex (one composer + one mic), no server-side queue -----
+let _busy = false;
+function busyError() { const e = new Error('dictation backend is busy; retry shortly'); e.code = 'busy'; return e; }
+function acquireNow() { if (_busy) throw busyError(); _busy = true; }
 function tryAcquire() { if (_busy) return false; _busy = true; return true; }
-function release() { _busy = false; const n = _q.shift(); if (n) n(); }
+function release() { _busy = false; }
 
 // --- last-dictation result (surfaced in /healthz as lastDictation) ----------
 let _last = null;
@@ -59,12 +53,30 @@ async function resetDictation(page) {
 }
 
 // --- audio injectors --------------------------------------------------------
-function playWavFile(file) {
+function playWavFile(file, durationMs = 0) {
   return new Promise((resolve, reject) => {
     const p = spawn('paplay', ['--device=' + SINK, file], { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
+    let settled = false;
     let err = ''; p.stderr.on('data', d => (err += d));
-    p.on('error', reject);
-    p.on('close', c => (c === 0 ? resolve() : reject(new Error('paplay exit ' + c + ': ' + err.trim()))));
+    const timeoutMs = Math.max(15000, Math.min(700000, Number(durationMs || 0) + 15000));
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { p.kill('SIGKILL'); } catch (_) {}
+      const e = new Error('audio playback timed out');
+      e.code = 'transcription_timeout';
+      reject(e);
+    }, timeoutMs);
+    p.on('error', e => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); reject(e);
+    });
+    p.on('close', c => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      if (c === 0) resolve();
+      else reject(new Error('paplay exit ' + c + ': ' + err.trim()));
+    });
   });
 }
 const spawnPacat = () => spawn('pacat',
@@ -76,33 +88,45 @@ async function startDictation(page) {
   await page.click('[aria-label="Start dictation"]', { timeout: 8000 });
   await page.waitForSelector('[aria-label="Submit dictation"]', { timeout: 8000 });
 }
-async function submitAndScrape(page) {
+async function submitAndScrape(page, timeoutMs = 40000) {
   const submit = await page.$('[aria-label="Submit dictation"]');
   if (submit) await submit.click({ timeout: 8000 }).catch(() => {});
   let text = '';
-  for (let i = 0; i < 40; i++) { text = await composerText(page); if (text) break; await sleep(500); }
+  const attempts = Math.max(1, Math.ceil(timeoutMs / 500));
+  for (let i = 0; i < attempts; i++) { text = await composerText(page); if (text) break; await sleep(500); }
   await clearComposer(page);
   return text;
 }
 
 // --- batch mode -------------------------------------------------------------
 async function transcribe(audioBuffer) {
-  await acquire();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wispr-dictate-'));
   fs.chmodSync(tmpDir, 0o700);
   const tmp = path.join(tmpDir, 'audio.wav');
   fs.writeFileSync(tmp, audioBuffer, { mode: 0o600 });
+  try { return await transcribeFile(tmp); }
+  finally { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
+}
+
+async function transcribeFile(file, audio = {}) {
+  acquireNow();
+  const durationMs = Number(audio.durationMs || 0);
   const t0 = Date.now();
   try {
     const page = await getPage();
     await startDictation(page);
-    await playWavFile(tmp);
+    await playWavFile(file, durationMs);
     await sleep(1200);
-    const text = await submitAndScrape(page);
+    const scrapeMs = Math.max(40000, Math.min(180000, Math.round(durationMs * 0.25) + 30000));
+    const text = await submitAndScrape(page, scrapeMs);
     recordResult(!!(text && text.length), Date.now() - t0, text ? undefined : 'empty transcript');
     return text;
-  } catch (e) { recordResult(false, Date.now() - t0, e.message); throw e; }
-  finally { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} release(); }
+  } catch (e) {
+    recordResult(false, Date.now() - t0, e.message);
+    throw e;
+  } finally {
+    release();
+  }
 }
 
 // --- streaming mode ---------------------------------------------------------
@@ -155,7 +179,7 @@ async function probe() {
   } finally { try { await b.close(); } catch (_) {} }
 }
 
-module.exports = { transcribe, startStream, pushAudio, stopStream, abortStream, probe, isBusy, lastResult };
+module.exports = { transcribe, transcribeFile, startStream, pushAudio, stopStream, abortStream, probe, isBusy, lastResult };
 
 if (require.main === module) {
   const wav = process.argv[2];

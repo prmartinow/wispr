@@ -4,10 +4,15 @@ import AVFoundation
 /// (raw PCM **s16le / 48 kHz / mono**) and emits ~real-time frames for streaming, while also
 /// accumulating the whole take so a failed stream can fall back to batch `POST /transcribe`.
 final class AudioStreamCapture {
+    static let maxSeconds = 600
+    static let sampleRate = 48_000
+    static let maxPCMBytes = sampleRate * 2 * maxSeconds
+
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private var startedAt: Date?
+    private var limitReached = false
 
     /// All captured PCM (s16le mono 48k), for the batch fallback.
     private(set) var pcm = Data()
@@ -16,10 +21,13 @@ final class AudioStreamCapture {
     var onFrame: ((Data) -> Void)?
     /// (level 0…1, elapsed seconds) for the HUD waveform. Called on the main thread.
     var onMeter: ((CGFloat, TimeInterval) -> Void)?
+    /// Called once when the 10-minute capture budget is reached.
+    var onLimitReached: (() -> Void)?
 
     func start(inputUID: String?) throws {
         if let uid = inputUID, !uid.isEmpty { AudioDevices.setDefaultInput(uid: uid) }
         pcm.removeAll(keepingCapacity: false)
+        limitReached = false
         startedAt = Date()
 
         let input = engine.inputNode
@@ -67,8 +75,17 @@ final class AudioStreamCapture {
         guard n > 0, let samples = out.int16ChannelData else { return }
 
         let frame = Data(bytes: samples[0], count: n * 2) // mono int16
-        pcm.append(frame)
-        onFrame?(frame)
+        let remaining = Self.maxPCMBytes - pcm.count
+        guard remaining > 0 else {
+            triggerLimitOnce()
+            return
+        }
+        let boundedFrame = frame.count <= remaining ? frame : Data(frame.prefix(remaining))
+        pcm.append(boundedFrame)
+        onFrame?(boundedFrame)
+        if boundedFrame.count < frame.count || pcm.count >= Self.maxPCMBytes {
+            triggerLimitOnce()
+        }
 
         // Level for the HUD, computed from the converted samples (no float-channel dependency).
         var sum = 0.0
@@ -79,6 +96,12 @@ final class AudioStreamCapture {
         let level = max(0.0, min(1.0, (db + 55.0) / 55.0))
         let elapsed = Date().timeIntervalSince(started)
         DispatchQueue.main.async { self.onMeter?(CGFloat(level), elapsed) }
+    }
+
+    private func triggerLimitOnce() {
+        guard !limitReached else { return }
+        limitReached = true
+        DispatchQueue.main.async { self.onLimitReached?() }
     }
 
     enum CaptureError: Error { case noInput }

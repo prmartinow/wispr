@@ -10,7 +10,9 @@ Three units (boot order via `After`/`Wants`): `wispr-virtmic` → `wispr-browser
   Revert with `systemctl --user unmask pulseaudio.socket pulseaudio.service`.
 - **`wispr-browser.service`** — dedicated **dictation service-only** Chromium on `DISPLAY=:95`, CDP `:9223`,
   profile `~/wispr-service-profile` (logged into dictation service once; the session persists in the profile).
-- **`wispr-server.service`** — the Node server on `:8090` (`POST /transcribe` + WS `/v1/stream`).
+  Its mount namespace hides wispr mTLS/runtime secrets.
+- **`wispr-server.service`** — the Node server on HTTP `:8090` for the VPS bridge and LAN mTLS
+  `:8443` for direct Mac access (`POST /transcribe` + WS `/v1/stream`).
 
 ## Install / refresh
 ```bash
@@ -27,4 +29,5 @@ journalctl --user -u wispr-server -f
 ## Notes
 - If the dictation service session expires, re-login via noVNC at http://wispr.local:6083 (display `:95`) —
   the fresh profile then persists the new session.
+- VNC/noVNC access is intentionally unchanged in this pass; the replacement access design is deferred.
 - The chrome binary + `playwright-core` paths are pinned to this rpc host.

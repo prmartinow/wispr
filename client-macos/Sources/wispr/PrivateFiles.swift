@@ -26,10 +26,12 @@ enum PrivateFiles {
             attributes: [.posixPermissions: 0o600])
         guard ok else { throw CocoaError(.fileWriteUnknown) }
         chmod(tmp.path, 0o600)
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
+        let rc = rename(tmp.path, url.path)
+        if rc != 0 {
+            let code = POSIXErrorCode(rawValue: errno) ?? .EIO
+            try? FileManager.default.removeItem(at: tmp)
+            throw POSIXError(code)
         }
-        try FileManager.default.moveItem(at: tmp, to: url)
         chmod(url.path, 0o600)
     }
 }

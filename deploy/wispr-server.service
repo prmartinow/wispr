@@ -6,9 +6,35 @@ Wants=wispr-browser.service wispr-virtmic.service
 [Service]
 Type=simple
 WorkingDirectory=~/dev/wispr/server
+Environment=PORT=8090
+Environment=HOST=0.0.0.0
+Environment=LAN_TLS_PORT=8443
+Environment=LAN_TLS_HOST=0.0.0.0
+Environment=LAN_TLS_KEY=~/.wispr/mtls/rpc-server.key
+Environment=LAN_TLS_CERT=~/.wispr/mtls/rpc-server.crt
+Environment=LAN_TLS_CA=~/.wispr/mtls/ca.crt
+Environment=REQUIRE_LAN_MTLS=1
 ExecStart=/usr/bin/node ~/dev/wispr/server/server.js
 Restart=always
 RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/run/user/1000
 
 [Install]
 WantedBy=default.target
