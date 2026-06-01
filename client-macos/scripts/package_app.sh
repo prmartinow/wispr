@@ -52,7 +52,7 @@ else
 fi
 
 echo "Built $APP"
-echo "Run:   open ./$APP   (server defaults to :8090; configure in Settings, or seed once via"
+echo "Run:   open ./$APP   (LAN defaults to https://wispr.local:8443; configure in Settings, or seed once via"
 echo "       WISPR_SERVER_URL / WISPR_TOKEN env on first launch — token goes to Keychain)"
 echo "Logs:  ~/Library/Logs/wispr/wispr.log  (or menu → Reveal Log in Finder)"
 echo "Grant Microphone + Accessibility when prompted (Accessibility = global hotkey + paste)."
