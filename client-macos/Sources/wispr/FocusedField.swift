@@ -42,10 +42,7 @@ enum FocusedField {
 
     static func matchesCurrent(_ target: PasteTarget?) -> Bool {
         guard let target, target.appPID > 0 else { return false }
-        guard let front = NSWorkspace.shared.frontmostApplication,
-              front.processIdentifier == target.appPID else { return false }
-        if let expectedBundle = target.bundleIdentifier,
-           front.bundleIdentifier != expectedBundle { return false }
+        guard frontmostMatches(target) else { return false }
         guard let current = focusedElement() else { return false }
         if let expectedPID = target.elementPID, pid(of: current) != expectedPID { return false }
         if !target.role.isEmpty, role(current) != target.role { return false }
@@ -55,6 +52,31 @@ enum FocusedField {
            !currentTitle.isEmpty,
            expectedTitle != currentTitle { return false }
         return true
+    }
+
+    static func frontmostMatches(_ target: PasteTarget?) -> Bool {
+        guard let target, target.appPID > 0,
+              let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier == target.appPID else { return false }
+        if let expectedBundle = target.bundleIdentifier,
+           front.bundleIdentifier != expectedBundle { return false }
+        return true
+    }
+
+    static func currentSummary() -> String {
+        let app = NSWorkspace.shared.frontmostApplication
+        let appPart = [
+            app?.localizedName ?? "unknown-app",
+            app?.bundleIdentifier ?? "unknown-bundle",
+            app.map { "pid=\($0.processIdentifier)" } ?? "pid=?",
+        ].joined(separator: " ")
+        guard let el = focusedElement() else { return "\(appPart), no-focused-element" }
+        return "\(appPart), role=\(role(el)), elPID=\(pid(of: el).map(String.init) ?? "?"), window=\(windowTitle(of: el) ?? "")"
+    }
+
+    static func targetSummary(_ target: PasteTarget?) -> String {
+        guard let target else { return "no-target" }
+        return "pid=\(target.appPID), bundle=\(target.bundleIdentifier ?? ""), role=\(target.role), window=\(target.windowTitle ?? "")"
     }
 
     static func insertDirect(_ text: String) -> Bool {

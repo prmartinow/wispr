@@ -249,16 +249,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.lastTranscript = text
         refreshMenu()
 
+        let targetSummary = FocusedField.targetSummary(pasteTarget)
+        Log.log("deliver: target before refocus — \(targetSummary)")
         FocusedField.refocus(pasteTarget)
-        try? await Task.sleep(nanoseconds: 140_000_000)
+        var targetAppReady = FocusedField.frontmostMatches(pasteTarget)
+        for _ in 0..<10 where !targetAppReady {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            targetAppReady = FocusedField.frontmostMatches(pasteTarget)
+        }
 
-        guard FocusedField.matchesCurrent(pasteTarget) else {
+        guard targetAppReady else {
             TextInserter.copy(text)
             appState.phase = .copied
-            Log.log("deliver: target changed — copied transcript for manual paste")
+            Log.log("deliver: target app changed — copied transcript for manual paste; target=\(targetSummary); current=\(FocusedField.currentSummary())")
             pasteTarget = nil
             scheduleIdle(after: 8)
             return
+        }
+
+        if !FocusedField.matchesCurrent(pasteTarget) {
+            Log.log("deliver: target field/window changed inside same app; attempting insert anyway; target=\(targetSummary); current=\(FocusedField.currentSummary())")
         }
 
         let el = FocusedField.focusedElement()
