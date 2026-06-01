@@ -8,15 +8,24 @@
 # exactly the external recording the server agent needs to validate dictation service dictation.
 #
 # Usage:
-#   WISPR_SERVER_URL=http://wispr.local:8080 WISPR_TOKEN=... ./scripts/contract-test.sh
+#   WISPR_SERVER_URL=https://wispr.local:8443 WISPR_TOKEN=... \
+#     WISPR_CLIENT_CERT=... WISPR_CLIENT_KEY=... WISPR_CA_CERT=... ./scripts/contract-test.sh
 #   ./scripts/contract-test.sh --keep-wav /tmp/rpc-dictation-test.wav   # also save the clip
 set -euo pipefail
 
-URL="${WISPR_SERVER_URL:-http://wispr.local:8090}"
+URL="${WISPR_SERVER_URL:-https://wispr.local:8443}"
 TOKEN="${WISPR_TOKEN:-}"
+CLIENT_CERT="${WISPR_CLIENT_CERT:-}"
+CLIENT_KEY="${WISPR_CLIENT_KEY:-}"
+CA_CERT="${WISPR_CA_CERT:-}"
 PHRASE="${WISPR_TEST_PHRASE:-rpc dictation test successful}"
 OUT_WAV=""
 [ "${1:-}" = "--keep-wav" ] && OUT_WAV="${2:?path required after --keep-wav}"
+
+curl_tls=()
+[ -n "$CLIENT_CERT" ] && curl_tls+=(--cert "$CLIENT_CERT")
+[ -n "$CLIENT_KEY" ] && curl_tls+=(--key "$CLIENT_KEY")
+[ -n "$CA_CERT" ] && curl_tls+=(--cacert "$CA_CERT")
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -30,12 +39,14 @@ echo "  $(afinfo "$wav" | awk -F': ' '/Data format/{print $2}')"
 
 echo "▸ GET $URL/healthz"
 code="$(curl -sS -o "$tmp/health.json" -w '%{http_code}' \
+  "${curl_tls[@]}" \
   -H "Authorization: Bearer $TOKEN" "$URL/healthz" || echo 000)"
 echo "  HTTP $code  $(cat "$tmp/health.json" 2>/dev/null)"
 [ "$code" = "200" ] || { echo "✗ healthz not 200 (server up? token? bound to LAN?)"; exit 1; }
 
 echo "▸ POST $URL/transcribe  (multipart audio=$wav)"
 code="$(curl -sS -o "$tmp/resp.json" -w '%{http_code}' \
+  "${curl_tls[@]}" \
   -H "Authorization: Bearer $TOKEN" \
   -F "audio=@$wav;type=audio/wav;filename=audio.wav" \
   "$URL/transcribe" || echo 000)"
