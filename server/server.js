@@ -167,7 +167,7 @@ function receiveAudioFile(req) {
     try {
       bb = Busboy({
         headers: req.headers,
-        limits: { files: 1, fields: 0, parts: 1, fileSize: BATCH_UPLOAD_MAX_BYTES }
+        limits: { files: 1, fields: 0, parts: 2, fileSize: BATCH_UPLOAD_MAX_BYTES }
       });
     } catch (e) {
       rmrf(tmpDir);
