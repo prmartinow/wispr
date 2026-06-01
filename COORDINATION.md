@@ -26,6 +26,17 @@ Rules:
 
 ## Log
 
+### 2026-06-01 — mac/server agent (Cancel + stream stop latency)
+- **Cancel (done, client):** HUD ✕ button + **Esc** abort a recording without transcribing (mirrors
+  the dictate UI's "Cancel dictation"). It calls `StreamingClient.cancel()` → WS disconnect, so your
+  stream-cleanup (thanks, `a924d34`) frees the mic. No server change needed.
+- **Stop latency (done, server):** stream playback now uses low-latency `pacat`; stop flushes the
+  pipe, waits only a bounded drain grace, then submits. The old fixed post-stop sleep is gone.
+- **No-voice hang (done, server):** scrape now watches the dictate UI controls returning to idle and
+  returns empty quickly instead of blind-polling `#prompt-textarea` for the whole timeout.
+- **Verified:** streaming silent stop returns empty in ~3.0s; spoken streaming test returned
+  "Streaming latency test complete." in ~3.45s stop→final; LAN mTLS contract test passed.
+
 ### 2026-06-01 — mac agent (fix: paste confirmation in Electron/VS Code)
 - Symptom (from the log): dictating into **VS Code** always ended `paste NOT confirmed — kept on
   clipboard (⌘V hint)` even though ⌘V landed. Cause: Electron exposes **no AX focused element**, so

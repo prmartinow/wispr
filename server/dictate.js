@@ -13,6 +13,7 @@ const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 const CDP = process.env.DICTATE_CDP || 'http://127.0.0.1:9223';
 const SINK = process.env.DICTATE_SINK || 'virtmic';
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
+const STREAM_DRAIN_GRACE_MS = Number(process.env.STREAM_DRAIN_GRACE_MS || 1300);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // --- single-flight mutex (one composer + one mic), no server-side queue -----
@@ -42,6 +43,18 @@ async function getPage() {
 const composerText = page => page.evaluate(() => {
   const c = document.querySelector('#prompt-textarea');
   return c ? (c.innerText || c.textContent || '').trim() : '';
+});
+const dictationUIState = page => page.evaluate(() => {
+  const labels = [...document.querySelectorAll('[aria-label]')]
+    .map(el => el.getAttribute('aria-label') || '');
+  const has = re => labels.some(label => re.test(label));
+  const c = document.querySelector('#prompt-textarea');
+  return {
+    text: c ? (c.innerText || c.textContent || '').trim() : '',
+    start: has(/^Start dictation$/i),
+    submit: has(/^Submit dictation$/i),
+    cancel: has(/^Cancel dictation$/i)
+  };
 });
 async function clearComposer(page) {
   try { await page.click('#prompt-textarea', { timeout: 4000 }); await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace'); } catch (_) {}
@@ -80,7 +93,8 @@ function playWavFile(file, durationMs = 0) {
   });
 }
 const spawnPacat = () => spawn('pacat',
-  ['--playback', '--raw', '--rate=48000', '--format=s16le', '--channels=1', '--device=' + SINK],
+  ['--playback', '--raw', '--rate=48000', '--format=s16le', '--channels=1',
+    '--latency-msec=20', '--process-time-msec=10', '--device=' + SINK],
   { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
 
 async function startDictation(page) {
@@ -91,9 +105,22 @@ async function startDictation(page) {
 async function submitAndScrape(page, timeoutMs = 40000) {
   const submit = await page.$('[aria-label="Submit dictation"]');
   if (submit) await submit.click({ timeout: 8000 }).catch(() => {});
+  const deadline = Date.now() + timeoutMs;
   let text = '';
-  const attempts = Math.max(1, Math.ceil(timeoutMs / 500));
-  for (let i = 0; i < attempts; i++) { text = await composerText(page); if (text) break; await sleep(500); }
+  let doneSince = 0;
+  while (Date.now() < deadline) {
+    const st = await dictationUIState(page);
+    text = st.text;
+    if (text) break;
+    if (st.submit || st.cancel) {
+      doneSince = 0;
+    } else if (st.start) {
+      doneSince ||= Date.now();
+      if (Date.now() - doneSince >= 800) break;
+    }
+    await sleep(st.start ? 100 : 250);
+  }
+  if (!text) text = await composerText(page);
   await clearComposer(page);
   return text;
 }
@@ -143,11 +170,17 @@ async function startStream() {
 function pushAudio(s, buf) { try { if (s && s.pacat && s.pacat.stdin.writable) s.pacat.stdin.write(buf); } catch (_) {} }
 async function stopStream(s) {
   try {
-    // flush remaining PCM and let pulse drain it into the mic
-    await new Promise(res => { let done = false; const fin = () => { if (!done) { done = true; res(); } };
-      s.pacat.on('close', fin); try { s.pacat.stdin.end(); } catch (_) { fin(); } setTimeout(fin, 8000); });
-    await sleep(2000); // dictation service finishes transcribing the tail still in the pulse buffer
+    const drainStarted = Date.now();
+    // Flush the pipe, but do not wait for pacat process exit; with low Pulse latency, a short
+    // grace is enough and avoids making Stop feel like it has a multi-second dead zone.
+    await new Promise(res => { try { s.pacat.stdin.end(res); } catch (_) { res(); } });
+    await Promise.race([
+      new Promise(res => s.pacat.once('close', res)),
+      sleep(STREAM_DRAIN_GRACE_MS)
+    ]);
+    const drainMs = Date.now() - drainStarted;
     const text = await submitAndScrape(s.page);
+    console.log(`[wispr-dictate] stream stop drain=${drainMs}ms text=${text ? text.length : 0}`);
     recordResult(!!(text && text.length), Date.now() - s.t0, text ? undefined : 'empty transcript');
     return { text, duration_ms: Date.now() - s.t0 };
   } catch (e) { recordResult(false, Date.now() - s.t0, e.message); throw e; }

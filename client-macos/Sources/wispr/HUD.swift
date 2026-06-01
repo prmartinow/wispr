@@ -37,9 +37,9 @@ final class HUDController {
     private var didLayout = false
     private var collapseWork: DispatchWorkItem?
 
-    init(state: AppState, onStart: @escaping () -> Void, onStop: @escaping () -> Void) {
+    init(state: AppState, onStart: @escaping () -> Void, onStop: @escaping () -> Void, onCancel: @escaping () -> Void) {
         appState = state
-        let hosting = NSHostingView(rootView: HUDView(state: state, onStart: onStart, onStop: onStop))
+        let hosting = NSHostingView(rootView: HUDView(state: state, onStart: onStart, onStop: onStop, onCancel: onCancel))
         hosting.autoresizingMask = [.width, .height]
         hosting.frame = container.bounds
         container.addSubview(hosting)
@@ -97,7 +97,7 @@ final class HUDController {
     private static func size(phase: DictationPhase, hovering: Bool) -> NSSize {
         switch phase {
         case .idle:         return hovering ? NSSize(width: 222, height: 42) : NSSize(width: 72, height: 26)
-        case .recording:    return NSSize(width: 330, height: 54)
+        case .recording:    return NSSize(width: 372, height: 54)
         case .transcribing: return NSSize(width: 240, height: 46)
         case .inserted, .copied, .available, .error: return NSSize(width: 300, height: 46)
         }
@@ -108,6 +108,7 @@ struct HUDView: View {
     @ObservedObject var state: AppState
     var onStart: () -> Void
     var onStop: () -> Void
+    var onCancel: () -> Void
     @State private var bars: [CGFloat] = Array(repeating: 0.06, count: 22)
 
     private var compact: Bool { state.phase == .idle && !state.hudExpanded }
@@ -144,10 +145,13 @@ struct HUDView: View {
                 }
             }
         case .recording:
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Circle().fill(.red).frame(width: 9, height: 9)
                 waveform
                 Text(timeString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                Button(action: onCancel) { Image(systemName: "xmark") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Cancel (Esc)")
                 Button(action: onStop) { Label("Stop", systemImage: "stop.fill") }
                     .buttonStyle(.borderedProminent).controlSize(.small).tint(.red)
             }

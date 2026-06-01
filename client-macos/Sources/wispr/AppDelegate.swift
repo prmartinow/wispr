@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var idleWork: DispatchWorkItem?
     private var retrying = false
     private var pasteTarget: FocusedField.PasteTarget?
+    private var escapeMonitors: [Any] = []
     private var startingRecording = false
     private var recordingStartedAt: Date?
     private let toggleStopDebounce: TimeInterval = 0.35
@@ -37,7 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         hud = HUDController(state: appState,
                             onStart: { [weak self] in self?.startRecording() },
-                            onStop: { [weak self] in self?.stopAndTranscribe() })
+                            onStop: { [weak self] in self?.stopAndTranscribe() },
+                            onCancel: { [weak self] in self?.cancelRecording() })
         setupStatusItem()
         appState.pendingCount = pending.count
 
@@ -181,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stream = s
             recordingStartedAt = Date()
             appState.phase = .recording
+            installEscapeMonitor() // Esc cancels while recording
             Log.log("record: started (streaming, input=\(settings.inputDeviceUID ?? "system default"))")
         } catch {
             s.cancel()
@@ -191,8 +194,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startingRecording = false
     }
 
+    /// Abort the current recording without transcribing (HUD ✕ or Esc) — mirrors the dictate
+    /// service's "Cancel dictation". Disconnecting the stream makes the server cancel + free the mic.
+    private func cancelRecording() {
+        guard appState.phase == .recording else { return }
+        removeEscapeMonitor()
+        recordingStartedAt = nil
+        _ = capture.stop()
+        stream?.cancel()
+        stream = nil
+        appState.level = 0
+        appState.phase = .idle
+        Log.log("record: cancelled by user (discarded, nothing transcribed)")
+    }
+
+    /// Esc cancels while recording. Global+local NSEvent monitors (we hold Accessibility); the
+    /// monitor only lives during recording and only reacts to Esc, so it doesn't disturb typing.
+    private func installEscapeMonitor() {
+        removeEscapeMonitor()
+        let handle: (NSEvent) -> Void = { [weak self] event in
+            if event.keyCode == 53 { DispatchQueue.main.async { self?.cancelRecording() } } // 53 = Esc
+        }
+        let global = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { handle($0) }
+        let local = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { handle($0); return $0 }
+        escapeMonitors = [global, local].compactMap { $0 }
+    }
+
+    private func removeEscapeMonitor() {
+        escapeMonitors.forEach { NSEvent.removeMonitor($0) }
+        escapeMonitors = []
+    }
+
     private func stopAndTranscribe() {
         guard appState.phase == .recording else { return }
+        removeEscapeMonitor()
         recordingStartedAt = nil
         let pcm = capture.stop()
         let streamRef = stream
