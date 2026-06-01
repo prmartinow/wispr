@@ -1,0 +1,12 @@
+[Unit]
+Description=Persistent Xvfb display for VNC
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -lc 'if ! /usr/bin/xdpyinfo -display :95 >/dev/null 2>&1; then rm -f /tmp/.X95-lock /tmp/.X11-unix/X95; fi'
+ExecStart=/usr/bin/Xvfb :95 -screen 0 1920x1080x24 -ac -noreset
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
