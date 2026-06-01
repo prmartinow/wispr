@@ -9,12 +9,13 @@ home server → pastes the returned text into the focused app. Builds against
 cd client-macos
 ./scripts/package_app.sh        # -> wispr.app (Info.plist for mic TCC + ad-hoc sign)
 open ./wispr.app              # configure server/token in Settings (gear), or seed via env:
-# WISPR_SERVER_URL=http://wispr.local:8090 \
+# WISPR_SERVER_URL=https://wispr.local:8443 \
 # WISPR_TOKEN="$(ssh -p 2224 user@wispr.local 'sed -n s/^WISPR_BEARER_TOKEN=//p ~/dev/wispr/server/.env')" \
 #   open ./wispr.app
 ```
-Server URL defaults to `http://wispr.local:8090`. The token is stored in the **Keychain**
-(seeded once from `WISPR_TOKEN` if set).
+Server URL defaults to `https://wispr.local:8443` over LAN mTLS. The token and client
+mTLS files are stored under `~/Library/Application Support/wispr` with private permissions
+(seeded once from `WISPR_TOKEN` and the local mTLS bundle).
 
 ## GUI
 - **Floating HUD pill** (bottom-center, always-on-top, non-activating so it never steals focus):
@@ -40,11 +41,12 @@ Server URL defaults to `http://wispr.local:8090`. The token is stored in the **K
 |---|---|
 | `AppDelegate.swift` | status item, windows, hotkey wiring, record→transcribe→insert orchestration |
 | `AppState.swift` | observable dictation state machine (phase, level, elapsed) |
-| `Settings.swift` | persisted settings (UserDefaults) + bearer token (Keychain) |
+| `Settings.swift` | persisted settings (UserDefaults) + private bearer token file |
 | `HistoryStore.swift` | recent transcripts, JSON in Application Support |
 | `AudioRecorder.swift` | mic → WAV mono/16-bit/48 kHz (contract) + live level metering |
 | `AudioDevices.swift` | list input devices + set system default input (mic picker) |
 | `HotKeyManager.swift` | global shortcut via NSEvent monitor — toggle + push-to-talk |
+| `Net.swift` | pinned mTLS identity/CA loading + URLSession delegate |
 | `TranscriptionClient.swift` | multipart `POST /transcribe`, `/healthz`, error decoding |
 | `TextInserter.swift` | pasteboard + synthesized ⌘V |
 | `HUD.swift` | floating pill panel + waveform view |

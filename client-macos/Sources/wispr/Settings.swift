@@ -1,5 +1,4 @@
 import AppKit
-import Security
 
 enum ActivationMode: String, CaseIterable, Identifiable {
     case toggle
@@ -44,8 +43,9 @@ enum EndpointPolicy {
     }
 }
 
-/// Persisted user settings. Scalars live in UserDefaults; the bearer token lives in the
-/// Keychain. Initial values fall back to env vars (WISPR_SERVER_URL / WISPR_TOKEN)
+/// Persisted user settings. Scalars live in UserDefaults; the bearer token lives in a
+/// private 0600 app-support file so macOS Keychain ACL prompts cannot freeze the menu app
+/// before launch. Initial values fall back to env vars (WISPR_SERVER_URL / WISPR_TOKEN)
 /// then to the LAN defaults, so the app works out of the box and is configurable in the UI.
 final class Settings: ObservableObject {
     private let d = UserDefaults.standard
@@ -90,8 +90,8 @@ final class Settings: ObservableObject {
         hotKeyModifiers = UInt((d.object(forKey: K.modifiers) as? Int).map(UInt.init) ?? defaultMods)
         inputDeviceUID = d.string(forKey: K.inputUID)
 
-        // Seed the Keychain token from the env on first run if empty.
-        if token.isEmpty, let t = env["WISPR_TOKEN"], !t.isEmpty { token = t }
+        // Seed/refresh the private token file from the env before any network checks.
+        if let t = env["WISPR_TOKEN"], !t.isEmpty { token = t }
     }
 
     var serverURL: URL {
@@ -109,58 +109,35 @@ final class Settings: ObservableObject {
 
     var modifierFlags: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: hotKeyModifiers) }
 
-    /// Bearer token, stored in the login Keychain (never in the plist).
+    /// Bearer token, stored in a private app-support file (never in the plist).
     var token: String {
-        get { Keychain.get(account: "bearerToken") ?? "" }
-        set { Keychain.set(newValue, account: "bearerToken") }
+        get { PrivateTokenStore.get() ?? "" }
+        set { PrivateTokenStore.set(newValue) }
     }
 }
 
-enum Keychain {
-    private static let service = "xyz.p12w.wispr"
-
-    static func set(_ value: String, account: String) {
-        let base: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        guard !value.isEmpty else {
-            SecItemDelete(base as CFDictionary)
-            return
-        }
-
-        let attrs: [String: Any] = [
-            kSecValueData as String: Data(value.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        ]
-        let update = SecItemUpdate(base as CFDictionary, attrs as CFDictionary)
-        if update == errSecSuccess { return }
-        guard update == errSecItemNotFound else {
-            Log.log("keychain: update failed account=\(account) status=\(update)")
-            return
-        }
-
-        var add = base
-        add.merge(attrs) { _, new in new }
-        let added = SecItemAdd(add as CFDictionary, nil)
-        if added != errSecSuccess {
-            Log.log("keychain: add failed account=\(account) status=\(added)")
-        }
+enum PrivateTokenStore {
+    private static var url: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("wispr", isDirectory: true)
+            .appendingPathComponent("token")
     }
 
-    static func get(account: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data,
-              let s = String(data: data, encoding: .utf8) else { return nil }
-        return s
+    static func get() -> String? {
+        PrivateFiles.lockDownIfPresent(url)
+        guard let data = try? Data(contentsOf: url),
+              let token = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else { return nil }
+        return token
+    }
+
+    static func set(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        try? PrivateFiles.write(Data(trimmed.utf8), to: url)
     }
 }

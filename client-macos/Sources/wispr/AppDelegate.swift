@@ -30,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var idleWork: DispatchWorkItem?
     private var retrying = false
     private var pasteTarget: FocusedField.PasteTarget?
+    private var startingRecording = false
+    private var recordingStartedAt: Date?
+    private let toggleStopDebounce: TimeInterval = 0.35
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hud = HUDController(state: appState,
@@ -144,11 +147,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func toggle() {
         if appState.phase == .transcribing { return } // serialized server-side
+        if startingRecording { return }
+        if appState.phase == .recording,
+           settings.activation == .toggle,
+           let started = recordingStartedAt,
+           Date().timeIntervalSince(started) < toggleStopDebounce {
+            Log.log("HotKey: ignored immediate stop during recording debounce")
+            return
+        }
         appState.phase == .recording ? stopAndTranscribe() : startRecording()
     }
 
     private func startRecording() {
-        guard !appState.isBusy else { return }
+        guard !appState.isBusy, !startingRecording else { return }
+        startingRecording = true
         idleWork?.cancel()
         let frontmost = NSWorkspace.shared.frontmostApplication
         pasteTarget = FocusedField.capture(frontmost: frontmost)
@@ -167,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try s.open()
             try capture.start(inputUID: settings.inputDeviceUID)
             stream = s
+            recordingStartedAt = Date()
             appState.phase = .recording
             Log.log("record: started (streaming, input=\(settings.inputDeviceUID ?? "system default"))")
         } catch {
@@ -175,10 +188,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState.phase = .error(WisprError.mic("Microphone unavailable").userMessage)
             scheduleIdle(after: 2.5)
         }
+        startingRecording = false
     }
 
     private func stopAndTranscribe() {
         guard appState.phase == .recording else { return }
+        recordingStartedAt = nil
         let pcm = capture.stop()
         let streamRef = stream
         stream = nil

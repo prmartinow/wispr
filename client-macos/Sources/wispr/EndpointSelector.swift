@@ -39,7 +39,7 @@ final class EndpointSelector {
     static func reachable(_ base: URL, token: String) async -> Bool {
         guard EndpointPolicy.allowed(base), !token.isEmpty else { return false }
         var req = URLRequest(url: base.appendingPathComponent("healthz"))
-        req.timeoutInterval = 2.5
+        req.timeoutInterval = 6
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         guard let (_, resp) = try? await Net.session.data(for: req) else { return false }
         return (resp as? HTTPURLResponse)?.statusCode == 200

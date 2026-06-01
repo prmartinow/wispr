@@ -11,7 +11,7 @@ const os = require('os');
 const path = require('path');
 const Busboy = require('busboy');
 const dictate = require('./dictate');
-const { WebSocketServer } = require('ws');
+const { WebSocket, WebSocketServer } = require('ws');
 const { spawn } = require('child_process');
 
 // --- config (server/.env, gitignored) -------------------------------------
@@ -361,8 +361,23 @@ function handleStream(ws) {
       if (startP) return;                          // extra start fields (format/lang) are ignored
       startedAt = Date.now();
       startP = dictate.startStream();
-      try { session = await startP; for (const b of pre.splice(0)) dictate.pushAudio(session, b); preBytes = 0; send({ type: 'ready' }); }
-      catch (e) { send({ type: 'error', code: e.code || 'backend_unavailable', message: String(e.message || e) }); try { ws.close(); } catch (_) {} }
+      try {
+        const s = await startP;
+        if (closing || ws.readyState !== WebSocket.OPEN) {
+          await dictate.abortStream(s).catch(() => {});
+          return;
+        }
+        session = s;
+        for (const b of pre.splice(0)) dictate.pushAudio(session, b);
+        preBytes = 0;
+        send({ type: 'ready' });
+      }
+      catch (e) {
+        if (!closing) {
+          send({ type: 'error', code: e.code || 'backend_unavailable', message: String(e.message || e) });
+          try { ws.close(); } catch (_) {}
+        }
+      }
     } else if (msg.type === 'stop') {
       if (stopped) return; stopped = true;
       try { if (startP) await startP; } catch (_) {}
@@ -383,7 +398,15 @@ function handleStream(ws) {
       else if (startedAt && Date.now() - startedAt > STREAM_MAX_MS) abort('max_duration', 'stream exceeded max duration');
     }
   }, HEARTBEAT_MS);
-  ws.on('close', () => { clearInterval(wd); if (session) { const s = session; session = null; dictate.abortStream(s).catch(() => {}); } });
+  ws.on('close', () => {
+    closing = true;
+    clearInterval(wd);
+    if (session) {
+      const s = session;
+      session = null;
+      dictate.abortStream(s).catch(() => {});
+    }
+  });
   ws.on('error', () => {});
 }
 

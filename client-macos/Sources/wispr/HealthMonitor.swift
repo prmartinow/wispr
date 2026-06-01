@@ -54,9 +54,12 @@ final class HealthMonitor {
         var req = URLRequest(url: url)
         req.timeoutInterval = 6
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
-        Net.session.dataTask(with: req) { [weak self] data, resp, _ in
+        Net.session.dataTask(with: req) { [weak self] data, resp, error in
             guard let self else { return }
             let new = Self.classify(status: (resp as? HTTPURLResponse)?.statusCode, data: data)
+            if new == .unreachable, let error {
+                Log.log("health: request failed \(url.absoluteString) — \(error.localizedDescription)")
+            }
             DispatchQueue.main.async {
                 let changed = self.status != new
                 self.status = new
