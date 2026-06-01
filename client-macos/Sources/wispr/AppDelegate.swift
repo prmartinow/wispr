@@ -271,7 +271,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.log("deliver: target field/window changed inside same app; attempting insert anyway; target=\(targetSummary); current=\(FocusedField.currentSummary())")
         }
 
-        let el = FocusedField.focusedElement()
+        // If no AX element is exposed (Electron/web apps like VS Code keep a11y lazy), force the
+        // target app's accessibility tree on (AXManualAccessibility, like Wispr Flow) and re-query.
+        // Then `el != nil` ⇒ a real field (verify it); `el == nil` ⇒ genuinely no field ⇒ keep the
+        // ⌘V hint instead of falsely claiming insertion (superwhisper/Wispr Flow behavior).
+        var el = FocusedField.focusedElement()
+        if el == nil, let pid = pasteTarget?.appPID, pid > 0 {
+            FocusedField.enableElectronAccessibility(pid: pid)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            el = FocusedField.focusedElement()
+        }
         let before = FocusedField.valueLength(el)
         var confirmed = false
 
@@ -290,13 +299,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             confirmed = FocusedField.confirmInserted(el, expected: text, before: before)
             if confirmed {
                 snapshot.restore(ifPasteboardStillContains: text)
-            } else if el == nil {
-                // Electron/web editors (e.g. VS Code) expose no AX focused element, so we can't
-                // read it back to verify. We already refocused the target app (the targetAppReady
-                // guard passed) and sent ⌘V, so trust it instead of nagging — but leave the
-                // transcript on the clipboard as a manual-⌘V safety net (don't restore).
-                confirmed = true
-                Log.log("deliver: unverifiable focus (Electron/web) — trusting ⌘V; clipboard kept; target=\(targetSummary)")
             }
         }
 

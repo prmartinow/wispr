@@ -33,6 +33,16 @@ enum FocusedField {
         return (f as! AXUIElement)
     }
 
+    /// Force Electron/Chromium apps (VS Code, Slack, Discord, …) to build their accessibility tree
+    /// so the focused editor element becomes readable. This is the mechanism Wispr Flow uses
+    /// (`AXManualAccessibility`); without it Chromium keeps a11y lazy and `focusedElement()` is nil,
+    /// which we can't tell apart from "no field focused at all".
+    static func enableElectronAccessibility(pid: pid_t) {
+        guard pid > 0 else { return }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    }
+
     static func refocus(_ target: PasteTarget?) {
         guard let target, target.appPID > 0,
               let app = NSRunningApplication(processIdentifier: target.appPID),
