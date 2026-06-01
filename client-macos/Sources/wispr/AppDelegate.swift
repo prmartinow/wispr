@@ -281,35 +281,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(nanoseconds: 200_000_000)
             el = FocusedField.focusedElement()
         }
+        // Always insert via ⌘V — reliable in native *and* Electron fields. (Direct AX "set value"
+        // no-ops in Chromium but reports success, which is what left VS Code with nothing inserted.)
+        // Then derive the message from verification: a readable editable field that took the text
+        // ⇒ "inserted"; otherwise (no field, or unverifiable) keep it on the clipboard with the hint.
         let before = FocusedField.valueLength(el)
-        var confirmed = false
-
-        if FocusedField.insertDirect(text) {
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            confirmed = true
-            let verified = FocusedField.confirmInserted(el, expected: text, before: before)
-            Log.log("deliver: direct AX insert \(verified ? "confirmed" : "accepted") (\(text.count) chars)")
-        }
-
-        if !confirmed {
-            let snapshot = PasteboardSnapshot.capture()
-            TextInserter.copy(text)
-            TextInserter.pasteKeystroke()
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            confirmed = FocusedField.confirmInserted(el, expected: text, before: before)
-            if confirmed {
-                snapshot.restore(ifPasteboardStillContains: text)
-            }
-        }
+        let snapshot = PasteboardSnapshot.capture()
+        TextInserter.copy(text)
+        TextInserter.pasteKeystroke()
+        try? await Task.sleep(nanoseconds: 220_000_000)
+        let confirmed = el != nil && FocusedField.confirmInserted(el, expected: text, before: before)
 
         pasteTarget = nil
         if confirmed {
+            snapshot.restore(ifPasteboardStillContains: text)
             appState.phase = .inserted
             Log.log("deliver: paste CONFIRMED (\(text.count) chars)")
             scheduleIdle(after: 0.4) // confirmed → return to interactive immediately (re-record fast)
         } else {
-            appState.phase = .copied      // hint persists so the user can ⌘V manually
-            Log.log("deliver: paste NOT confirmed — kept on clipboard (⌘V hint)")
+            appState.phase = .copied      // no field / unverifiable — transcript stays on clipboard
+            Log.log("deliver: paste sent, not verified — kept on clipboard (⌘V hint); current=\(FocusedField.currentSummary())")
             scheduleIdle(after: 8)
         }
     }
