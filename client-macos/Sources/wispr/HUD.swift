@@ -146,7 +146,7 @@ struct HUDView: View {
             }
         case .recording:
             HStack(spacing: 8) {
-                Circle().fill(.red).frame(width: 9, height: 9)
+                RecordingDot()
                 waveform
                 Text(timeString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                 Button(action: onCancel) { Image(systemName: "xmark") }
@@ -213,5 +213,18 @@ struct HUDView: View {
     private var timeString: String {
         let s = Int(state.elapsed)
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+/// The recording indicator: a red dot that gently pulses so it reads as "live recording"
+/// (distinct from the idle status dot, which shows green=online / red=offline).
+private struct RecordingDot: View {
+    @State private var dim = false
+    var body: some View {
+        Circle().fill(.red).frame(width: 9, height: 9)
+            .opacity(dim ? 0.4 : 1)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { dim = true }
+            }
     }
 }
