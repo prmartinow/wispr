@@ -109,7 +109,7 @@ struct HUDView: View {
     var onStart: () -> Void
     var onStop: () -> Void
     var onCancel: () -> Void
-    @State private var bars: [CGFloat] = Array(repeating: 0.06, count: 22)
+    @State private var bars: [CGFloat] = Array(repeating: 0.06, count: 32)
 
     private var compact: Bool { state.phase == .idle && !state.hudExpanded }
 
@@ -194,12 +194,21 @@ struct HUDView: View {
         }
     }
     private var waveform: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(bars.indices, id: \.self) { i in
-                Capsule().fill(.primary.opacity(0.85)).frame(width: 2, height: 4 + bars[i] * 22)
+        GeometryReader { geo in
+            let spacing: CGFloat = 2.5
+            let n = bars.count
+            let barW = max(1.5, (geo.size.width - spacing * CGFloat(n - 1)) / CGFloat(n))
+            HStack(alignment: .center, spacing: spacing) {
+                ForEach(bars.indices, id: \.self) { i in
+                    Capsule().fill(.primary.opacity(0.85))
+                        .frame(width: barW, height: 4 + bars[i] * 22)
+                }
             }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
         }
-        .frame(maxWidth: .infinity).frame(height: 26)
+        .frame(maxWidth: .infinity)
+        .frame(height: 26)
+        .padding(.horizontal, 3) // stop a little before the dot (left) and the time counter (right)
     }
     private var timeString: String {
         let s = Int(state.elapsed)

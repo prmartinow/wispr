@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var client = TranscriptionClient(settings: settings)
     private lazy var health = HealthMonitor(settings: settings)
     private lazy var endpoints = EndpointSelector(settings: settings)
+    private let network = NetworkMonitor()
     private let capture = AudioStreamCapture()
     private var stream: StreamingClient?
 
@@ -66,6 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         endpoints.onChange = { [weak self] _ in self?.health.check() } // re-check health on switch
         endpoints.start()
+
+        // Recover immediately when the network changes (Wi-Fi ↔ Ethernet) instead of waiting for the poll.
+        network.onChange = { [weak self] in
+            guard let self else { return }
+            Log.log("network: path changed → re-probing endpoint + health")
+            self.endpoints.select()
+            self.health.check()
+        }
+        network.start()
 
         appState.$phase.receive(on: RunLoop.main)
             .sink { [weak self] phase in self?.renderMenuBar(phase) }
