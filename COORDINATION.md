@@ -26,22 +26,27 @@ Rules:
 
 ## Log
 
-### 2026-06-02 — mac agent (🔴 ASK: stream stop is cropping the last words)
-- **Symptom (Pierre):** stop right after talking → transcript is missing the last few words.
-- **Root cause (from the client log):** the live playback runs **~2.0 s behind** real time — `start→ready`
-  is consistently **1.9–2.3 s** (the client buffers ~19–22 pre-ready frames and burst-feeds them on
-  `ready`, and `pacat` plays them at real time, so the mic is always ~that-much behind). Your
-  `STREAM_DRAIN_GRACE_MS = 1300` on `{stop}` is **< the ~2 s backlog**, so Submit fires before the tail
-  is played → the last ~0.7 s (a few words) is dropped.
-- **Fix (server, `dictate.js` `stopStream`):**
-  1. **Drain the FULL backlog**, not a fixed 1.3 s — wait until `pacat`/pulse has actually played all
-     received audio (query sink latency, or track received-PCM-duration − elapsed-playback) before Submit.
-     This auto-sizes the wait and guarantees no crop.
-  2. **Better — kill the backlog:** keep dictation **pre-armed** so `start→ready ≈ 0` (no pre-ready burst
-     → no backlog → both low latency *and* no crop). That's the real win.
-- **Offer (client):** I can send the exact streamed sample/byte count in the `{stop}` message so you can
-  drain to precisely that, if it helps. Say the word and I'll add it to `contract/stream.md`.
-- Client this pass: recording dot now **pulses** (clearer "live" vs the idle status dot). No contract change.
+### 2026-06-02 — single agent now owns BOTH client + server
+- Pierre lost access to the server agent. **I (mac agent) now drive server-side too**, via RPC.
+- **Deploy path:** edit in this monorepo → `git push` → on RPC `cd ~/dev/wispr && git pull --ff-only &&
+  systemctl --user restart wispr-server`. Units: `wispr-server` (node server.js, :8090 + :8443 mTLS),
+  `wispr-browser` (Chromium+CDP :9223), `wispr-virtmic` (PulseAudio null-sink `virtmic` + remap-source
+  `virtmic_in`). RPC repo origin is the local bare `~/git/wispr.git`.
+
+### 2026-06-02 — end-crop FIXED (server, deployed)
+- **Root cause:** live playback runs **~2 s behind** real time (`start→ready` ≈ 1.9–2.3 s of pre-ready
+  audio is burst-fed and `pacat` plays it at real time). `stopStream` capped the drain at a fixed
+  **1300 ms < backlog**, so Submit fired before the tail played → last ~0.7 s cropped.
+- **Fix (deployed):** `stopStream` now closes pacat stdin and **awaits pacat's real drain-complete**
+  (`pa_stream_drain` on EOF → `close`), i.e. it waits exactly the backlog — no fixed delay, no crop.
+  Verified on the RPC that pacat blocks until full real-time playout. 15 s cap is a wedged-pacat safety
+  net only; +400 ms settle lets dictation service's ASR finalize the tail before Submit. Log line:
+  `[wispr-dictate] stream stop drain=…ms clean=… text=…`.
+- **Latency:** the drain (~backlog, ~2 s) is hidden behind the existing "transcribing…" wait (dictation service's
+  own post-Submit transcription already dominates at ~4–7 s), so perceived latency barely moves.
+- **Next lever if needed:** shrink the backlog itself (client trims pre-ready leading silence, and/or
+  pre-arm dictation so `start→ready ≈ 0`) → lower the drain too. Holding until we see real measurements.
+- Client this pass: recording dot now **pulses** (clearer "live" vs the idle status dot).
 
 ### 2026-06-01 — mac/server agent (Cancel + stream stop latency)
 - **Cancel (done, client):** HUD ✕ button + **Esc** abort a recording without transcribing (mirrors
