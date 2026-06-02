@@ -13,7 +13,15 @@ const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 const CDP = process.env.DICTATE_CDP || 'http://127.0.0.1:9223';
 const SINK = process.env.DICTATE_SINK || 'virtmic';
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
-const STREAM_DRAIN_GRACE_MS = Number(process.env.STREAM_DRAIN_GRACE_MS || 1300);
+// We do NOT use a fixed drain delay. On stop we close pacat's stdin and wait for its *real*
+// drain-complete (pa_stream_drain on EOF → process exit), which is exactly as long as the live
+// stream is behind real time — no more, no less. These two bounds are only safety nets:
+//   - STREAM_DRAIN_MAX_MS : hard cap so a wedged pacat can never hang Stop forever.
+//   - STREAM_SUBMIT_SETTLE_MS : a brief pause after full playout so dictation service's streaming ASR can
+//     ingest the just-played tail before we click Submit (the audio is in the mic; the recognizer
+//     needs a beat to finalize it). Kept small; the heavy lifting is the real drain above.
+const STREAM_DRAIN_MAX_MS = Number(process.env.STREAM_DRAIN_MAX_MS || 15000);
+const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 400);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // --- single-flight mutex (one composer + one mic), no server-side queue -----
@@ -171,16 +179,21 @@ function pushAudio(s, buf) { try { if (s && s.pacat && s.pacat.stdin.writable) s
 async function stopStream(s) {
   try {
     const drainStarted = Date.now();
-    // Flush the pipe, but do not wait for pacat process exit; with low Pulse latency, a short
-    // grace is enough and avoids making Stop feel like it has a multi-second dead zone.
+    // 1) EOF the pipe, then wait for pacat to finish *playing out* every buffered sample into the
+    //    mic. pacat does pa_stream_drain on EOF and only emits 'close' once PulseAudio has rendered
+    //    the whole backlog — so this waits exactly the amount the live stream is behind real time
+    //    (the cap is a safety net for a wedged pacat, not a fixed delay).
     await new Promise(res => { try { s.pacat.stdin.end(res); } catch (_) { res(); } });
+    let drainedCleanly = false;
     await Promise.race([
-      new Promise(res => s.pacat.once('close', res)),
-      sleep(STREAM_DRAIN_GRACE_MS)
+      new Promise(res => s.pacat.once('close', () => { drainedCleanly = true; res(); })),
+      sleep(STREAM_DRAIN_MAX_MS)
     ]);
+    // 2) Brief settle so dictation service's streaming recognizer finalizes the just-played tail before Submit.
+    if (STREAM_SUBMIT_SETTLE_MS > 0) await sleep(STREAM_SUBMIT_SETTLE_MS);
     const drainMs = Date.now() - drainStarted;
     const text = await submitAndScrape(s.page);
-    console.log(`[wispr-dictate] stream stop drain=${drainMs}ms text=${text ? text.length : 0}`);
+    console.log(`[wispr-dictate] stream stop drain=${drainMs}ms clean=${drainedCleanly} text=${text ? text.length : 0}`);
     recordResult(!!(text && text.length), Date.now() - s.t0, text ? undefined : 'empty transcript');
     return { text, duration_ms: Date.now() - s.t0 };
   } catch (e) { recordResult(false, Date.now() - s.t0, e.message); throw e; }
