@@ -90,6 +90,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.show() // persistent
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        idleWork?.cancel()
+        removeEscapeMonitor()
+        if appState.phase == .recording {
+            recordingStartedAt = nil
+            let pcm = capture.stop()
+            stream?.cancel()
+            stream = nil
+            appState.level = 0
+            if pcm.count >= safetySaveMinPCMBytes {
+                pending.add(wav: WAV.fromPCM(pcm), reason: "App quit during recording — saved locally")
+                Log.log("record: app quit during recording; saved local WAV (pending=\(pending.count), bytes=\(pcm.count))")
+            } else {
+                Log.log("record: app quit during short recording; discarded \(pcm.count) bytes")
+            }
+        } else if appState.phase == .preparing {
+            preparingStream?.cancel()
+            preparingStream = nil
+            startingRecording = false
+            Log.log("record: app quit while preparing; cancelled stream setup")
+        } else if appState.phase == .transcribing {
+            Log.log("transcribe: app quit while transcribing; relying on existing safety copy if this was a long take")
+        }
+        return .terminateNow
+    }
+
     // MARK: - Menu bar
 
     private func setupStatusItem() {
