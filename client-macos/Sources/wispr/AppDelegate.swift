@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var startingRecording = false
     private var recordingStartedAt: Date?
     private let toggleStopDebounce: TimeInterval = 0.35
+    private let autoRetryMaxAudioSeconds: TimeInterval = 60
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hud = HUDController(state: appState,
@@ -61,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.appState.serverStatus = status
             self.refreshMenu()
             Log.log("health: \(status.label)")
-            if status == .up { self.retryPending() } // server recovered → drain the buffer
+            if status == .up { self.retryPending(auto: true) } // server recovered → drain short buffered takes
         }
         health.start()
 
@@ -149,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleFromMenu() { toggle() }
     @objc private func revealLog() { NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL]) }
-    @objc private func retryPendingAction() { health.check(); retryPending() }
+    @objc private func retryPendingAction() { health.check(); retryPending(auto: false) }
     @objc private func copyLastAction() {
         guard !appState.lastTranscript.isEmpty else { return }
         TextInserter.copy(appState.lastTranscript)
@@ -158,6 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func toggle() {
+        if retrying {
+            Log.log("HotKey: ignored while pending retry is running")
+            return
+        }
         if appState.phase == .transcribing { return } // serialized server-side
         if startingRecording { return }
         if appState.phase == .recording,
@@ -171,6 +176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startRecording() {
+        if retrying {
+            Log.log("record: ignored; pending retry in progress")
+            return
+        }
         guard !appState.isBusy, !startingRecording else { return }
         startingRecording = true
         idleWork?.cancel()
@@ -365,14 +374,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func retryPending() {
+    private func retryPending(auto: Bool) {
         guard !retrying, !appState.isBusy, appState.pendingCount > 0 else { return }
+        if auto, pending.oldest(maxDurationSeconds: autoRetryMaxAudioSeconds) == nil {
+            Log.log("retry: skipped auto retry; only long pending recordings remain")
+            return
+        }
         retrying = true
-        Log.log("retry: draining \(appState.pendingCount) pending")
+        let restorePhase = appState.phase
+        appState.phase = .transcribing
+        let mode = auto ? "auto" : "manual"
+        Log.log("retry: \(mode) draining \(appState.pendingCount) pending")
         Task { [weak self] in
             guard let self else { return }
             let recovered = Counter() // reference box (avoids capturing a mutated `var` concurrently)
-            while let item = await MainActor.run(body: { self.pending.oldest() }) {
+            while let item = await MainActor.run(body: {
+                auto ? self.pending.oldest(maxDurationSeconds: self.autoRetryMaxAudioSeconds) : self.pending.oldest()
+            }) {
                 guard let wav = await MainActor.run(body: { self.pending.wav(for: item) }) else {
                     await MainActor.run { self.pending.remove(item); self.appState.pendingCount = self.pending.count }
                     continue
@@ -397,10 +415,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await MainActor.run {
                 self.retrying = false
                 self.refreshMenu()
-                if recovered.n > 0, !self.appState.isBusy {
+                if recovered.n > 0 {
                     Log.log("retry: recovered \(recovered.n) → History + last transcript")
                     self.appState.phase = .available
                     self.scheduleIdle(after: 4)
+                } else if self.appState.phase == .transcribing {
+                    self.appState.phase = restorePhase
                 }
             }
         }

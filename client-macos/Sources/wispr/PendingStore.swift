@@ -28,6 +28,23 @@ final class PendingStore: ObservableObject {
     var count: Int { items.count }
     func oldest() -> PendingItem? { items.last }
     func wav(for item: PendingItem) -> Data? { try? Data(contentsOf: dir.appendingPathComponent(item.file)) }
+    func estimatedDurationSeconds(for item: PendingItem) -> TimeInterval? {
+        let url = dir.appendingPathComponent(item.file)
+        guard
+            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let size = attrs[.size] as? NSNumber
+        else { return nil }
+        let byteCount = size.intValue
+        guard byteCount > 44 else { return nil }
+        return TimeInterval(byteCount - 44) / 96_000.0 // mono 48 kHz s16le WAVs from WAV.fromPCM
+    }
+
+    func oldest(maxDurationSeconds: TimeInterval) -> PendingItem? {
+        items.reversed().first { item in
+            guard let seconds = estimatedDurationSeconds(for: item) else { return false }
+            return seconds <= maxDurationSeconds
+        }
+    }
 
     func add(wav: Data, reason: String) {
         let item = PendingItem(id: UUID(), file: "\(UUID().uuidString).wav", date: Date(), reason: reason)

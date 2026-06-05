@@ -23,6 +23,25 @@ const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
 const STREAM_DRAIN_MAX_MS = Number(process.env.STREAM_DRAIN_MAX_MS || 15000);
 const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 400);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+function makeAbortError() { const e = new Error('client disconnected'); e.code = 'client_closed'; return e; }
+function throwIfAborted(signal) { if (signal && signal.aborted) throw makeAbortError(); }
+function abortableSleep(ms, signal) {
+  if (!signal) return sleep(ms);
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(makeAbortError()); return; }
+    const timer = setTimeout(done, ms);
+    function done() {
+      signal.removeEventListener('abort', aborted);
+      resolve();
+    }
+    function aborted() {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', aborted);
+      reject(makeAbortError());
+    }
+    signal.addEventListener('abort', aborted, { once: true });
+  });
+}
 
 // --- single-flight mutex (one composer + one mic), no server-side queue -----
 let _busy = false;
@@ -74,27 +93,48 @@ async function resetDictation(page) {
 }
 
 // --- audio injectors --------------------------------------------------------
-function playWavFile(file, durationMs = 0) {
+function killProcessTree(child, signal) {
+  if (!child || !child.pid) return;
+  try { process.kill(-child.pid, signal); return; } catch (_) {}
+  try { child.kill(signal); } catch (_) {}
+}
+
+function playWavFile(file, durationMs = 0, signal) {
   return new Promise((resolve, reject) => {
-    const p = spawn('paplay', ['--device=' + SINK, file], { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
+    if (signal && signal.aborted) { reject(makeAbortError()); return; }
+    const p = spawn('paplay', ['--device=' + SINK, file], { env: { ...process.env, XDG_RUNTIME_DIR: XDG }, detached: true });
     let settled = false;
     let err = ''; p.stderr.on('data', d => (err += d));
     const timeoutMs = Math.max(15000, Math.min(700000, Number(durationMs || 0) + 15000));
-    const timer = setTimeout(() => {
+    let timer = null;
+    let killTimer = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    };
+    const stopPlayback = () => {
+      killProcessTree(p, 'SIGTERM');
+      killTimer = setTimeout(() => killProcessTree(p, 'SIGKILL'), 1000);
+    };
+    const fail = e => {
       if (settled) return;
       settled = true;
-      try { p.kill('SIGKILL'); } catch (_) {}
+      cleanup();
+      stopPlayback();
+      reject(e);
+    };
+    const onAbort = () => fail(makeAbortError());
+    timer = setTimeout(() => {
       const e = new Error('audio playback timed out');
       e.code = 'transcription_timeout';
-      reject(e);
+      fail(e);
     }, timeoutMs);
-    p.on('error', e => {
-      if (settled) return;
-      settled = true; clearTimeout(timer); reject(e);
-    });
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    p.on('error', e => fail(e));
     p.on('close', c => {
       if (settled) return;
-      settled = true; clearTimeout(timer);
+      settled = true; cleanup();
       if (c === 0) resolve();
       else reject(new Error('paplay exit ' + c + ': ' + err.trim()));
     });
@@ -105,18 +145,23 @@ const spawnPacat = () => spawn('pacat',
     '--latency-msec=20', '--process-time-msec=10', '--device=' + SINK],
   { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
 
-async function startDictation(page) {
+async function startDictation(page, signal) {
+  throwIfAborted(signal);
   await resetDictation(page);
+  throwIfAborted(signal);
   await page.click('[aria-label="Start dictation"]', { timeout: 8000 });
+  throwIfAborted(signal);
   await page.waitForSelector('[aria-label="Submit dictation"]', { timeout: 8000 });
 }
-async function submitAndScrape(page, timeoutMs = 40000) {
+async function submitAndScrape(page, timeoutMs = 40000, signal) {
+  throwIfAborted(signal);
   const submit = await page.$('[aria-label="Submit dictation"]');
   if (submit) await submit.click({ timeout: 8000 }).catch(() => {});
   const deadline = Date.now() + timeoutMs;
   let text = '';
   let doneSince = 0;
   while (Date.now() < deadline) {
+    throwIfAborted(signal);
     const st = await dictationUIState(page);
     text = st.text;
     if (text) break;
@@ -126,7 +171,7 @@ async function submitAndScrape(page, timeoutMs = 40000) {
       doneSince ||= Date.now();
       if (Date.now() - doneSince >= 800) break;
     }
-    await sleep(st.start ? 100 : 250);
+    await abortableSleep(st.start ? 100 : 250, signal);
   }
   if (!text) text = await composerText(page);
   await clearComposer(page);
@@ -143,20 +188,26 @@ async function transcribe(audioBuffer) {
   finally { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
 }
 
-async function transcribeFile(file, audio = {}) {
+async function transcribeFile(file, audio = {}, options = {}) {
   acquireNow();
   const durationMs = Number(audio.durationMs || 0);
   const t0 = Date.now();
+  const signal = options.signal;
+  let page = null;
   try {
-    const page = await getPage();
-    await startDictation(page);
-    await playWavFile(file, durationMs);
-    await sleep(1200);
+    throwIfAborted(signal);
+    page = await getPage();
+    await startDictation(page, signal);
+    await playWavFile(file, durationMs, signal);
+    await abortableSleep(1200, signal);
     const scrapeMs = Math.max(40000, Math.min(180000, Math.round(durationMs * 0.25) + 30000));
-    const text = await submitAndScrape(page, scrapeMs);
+    const text = await submitAndScrape(page, scrapeMs, signal);
     recordResult(!!(text && text.length), Date.now() - t0, text ? undefined : 'empty transcript');
     return text;
   } catch (e) {
+    if (page && (e.code === 'client_closed' || (signal && signal.aborted))) {
+      try { await resetDictation(page); } catch (_) {}
+    }
     recordResult(false, Date.now() - t0, e.message);
     throw e;
   } finally {

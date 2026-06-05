@@ -87,6 +87,8 @@ function statusForError(e) {
       return 413;
     case 'transcription_timeout':
       return 504;
+    case 'client_closed':
+      return 499;
     default:
       return 503;
   }
@@ -293,16 +295,29 @@ async function handleRequest(req, res) {
       uploaded = await receiveAudioFile(req);
       const audio = validateWavFile(uploaded.filePath);
       const t0 = Date.now();
+      const ac = new AbortController();
+      const abortTranscription = () => {
+        if (!res.writableEnded) ac.abort();
+      };
+      req.on('aborted', abortTranscription);
+      res.on('close', abortTranscription);
       let text;
-      try { text = await dictate.transcribeFile(uploaded.filePath, audio); }
-      catch (e) { return sendErr(res, statusForError(e), e.code || 'backend_unavailable', String(e.message || e)); }
+      try {
+        text = await dictate.transcribeFile(uploaded.filePath, audio, { signal: ac.signal });
+      } catch (e) {
+        if (ac.signal.aborted || res.destroyed || res.writableEnded) return;
+        return sendErr(res, statusForError(e), e.code || 'backend_unavailable', String(e.message || e));
+      } finally {
+        req.off('aborted', abortTranscription);
+        res.off('close', abortTranscription);
+      }
       if (!text) return sendErr(res, 504, 'transcription_timeout', 'dictation produced no text');
       return sendJson(res, 200, { text, engine: ENGINE, duration_ms: Date.now() - t0, audio_duration_ms: audio.durationMs });
     }
 
     return sendErr(res, 404, 'not_found', `no route for ${req.method} ${url}`);
   } catch (e) {
-    sendErr(res, statusForError(e), e.code || 'internal', e.message || 'error');
+    if (!res.destroyed && !res.writableEnded) sendErr(res, statusForError(e), e.code || 'internal', e.message || 'error');
   } finally {
     if (uploaded) rmrf(uploaded.tmpDir);
   }
