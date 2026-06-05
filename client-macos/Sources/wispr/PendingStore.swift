@@ -29,13 +29,21 @@ final class PendingStore: ObservableObject {
     func oldest() -> PendingItem? { items.last }
     func wav(for item: PendingItem) -> Data? { try? Data(contentsOf: dir.appendingPathComponent(item.file)) }
 
-    func add(wav: Data, reason: String) {
+    @discardableResult
+    func add(wav: Data, reason: String) -> PendingItem {
         let item = PendingItem(id: UUID(), file: "\(UUID().uuidString).wav", date: Date(), reason: reason)
         try? PrivateFiles.write(wav, to: dir.appendingPathComponent(item.file))
         items.insert(item, at: 0)
         while items.count > cap, let dropped = items.popLast() {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(dropped.file))
         }
+        save()
+        return item
+    }
+
+    func update(_ item: PendingItem, reason: String) {
+        guard let i = items.firstIndex(where: { $0.id == item.id }) else { return }
+        items[i] = PendingItem(id: item.id, file: item.file, date: item.date, reason: reason)
         save()
     }
 

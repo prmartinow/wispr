@@ -326,7 +326,8 @@ async function handleRequest(req, res) {
 // --- WebSocket /v1/stream: live PCM dictation (start -> binary PCM -> stop -> final) ---------
 const HEARTBEAT_MS = 10000;   // ws ping cadence; a missed pong terminates the socket
 const STREAM_IDLE_MS = 25000; // a started stream with no audio this long -> free the mic
-const STREAM_MAX_MS = MAX_AUDIO_SECONDS * 1000; // hard cap on one stream -> free the mic
+const STREAM_STOP_GRACE_MS = numCfg('STREAM_STOP_GRACE_MS', 30000);
+const STREAM_MAX_MS = MAX_AUDIO_SECONDS * 1000 + STREAM_STOP_GRACE_MS; // client stops at MAX_AUDIO_SECONDS; grace avoids cap races
 const STREAM_START_MS = 10000; // socket opened but no start -> close it
 const STREAM_MAX_FRAME_BYTES = 256 * 1024;
 const STREAM_MAX_PRE_READY_BYTES = 2 * 1024 * 1024;

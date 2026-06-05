@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let preflightEndpointTimeout: TimeInterval = 3
     private let preflightHealthTimeout: TimeInterval = 4
     private let streamPrepareTimeout: TimeInterval = 12
+    private let safetySaveMinPCMBytes = AudioStreamCapture.sampleRate * 2 * 10
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hud = HUDController(state: appState,
@@ -379,15 +380,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.phase = .transcribing
         let t0 = Date()
         Log.log("transcribe: stop (\(pcm.count) bytes pcm, ~\(Int(appState.elapsed))s)")
+        let safetyItem: PendingItem?
+        if pcm.count >= safetySaveMinPCMBytes {
+            safetyItem = pending.add(wav: WAV.fromPCM(pcm), reason: "Transcribing — safety copy")
+            appState.pendingCount = pending.count
+            refreshMenu()
+            Log.log("transcribe: safety-saved local WAV before transcription (pending=\(pending.count), bytes=\(pcm.count))")
+        } else {
+            safetyItem = nil
+        }
         Task { [weak self] in
             guard let self else { return }
             let result = await self.runTranscription(stream: streamRef, pcm: pcm, t0: t0)
             switch result {
             case .success(let text):
+                await MainActor.run {
+                    if let safetyItem {
+                        self.pending.remove(safetyItem)
+                        self.appState.pendingCount = self.pending.count
+                        self.refreshMenu()
+                        Log.log("transcribe: removed safety copy after success (pending=\(self.pending.count))")
+                    }
+                }
                 await self.deliver(text)
             case .failure(let werr):
                 await MainActor.run {
-                    if werr.shouldBuffer {
+                    if let safetyItem {
+                        self.pending.update(safetyItem, reason: werr.userMessage)
+                        self.appState.pendingCount = self.pending.count
+                        self.refreshMenu()
+                        Log.log("transcribe: kept safety copy for retry (pending=\(self.pending.count)) — \(werr.userMessage)")
+                    } else if werr.shouldBuffer {
                         self.pending.add(wav: WAV.fromPCM(pcm), reason: werr.userMessage)
                         self.appState.pendingCount = self.pending.count
                         self.refreshMenu()
@@ -409,8 +432,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.log("stream: final in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
                 return text.isEmpty ? .failure(.noSpeech) : .success(text)
             } catch let e as StreamingClient.StreamError where e.isSemantic {
-                Log.log("stream: server error \(e.displayMessage) — not retrying via batch")
-                return .failure(WisprError.from(e))
+                if case .server(let code, _) = e, code == "bad_request" || code == "max_duration" {
+                    Log.log("stream: server error \(e.displayMessage) — falling back to batch")
+                } else {
+                    Log.log("stream: server error \(e.displayMessage) — not retrying via batch")
+                    return .failure(WisprError.from(e))
+                }
             } catch {
                 Log.log("stream: transport failure — falling back to batch")
             }
