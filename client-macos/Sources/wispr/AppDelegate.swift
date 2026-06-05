@@ -35,7 +35,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var startingRecording = false
     private var recordingStartedAt: Date?
     private let toggleStopDebounce: TimeInterval = 0.35
-    private let autoRetryMaxAudioSeconds: TimeInterval = 60
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hud = HUDController(state: appState,
@@ -62,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.appState.serverStatus = status
             self.refreshMenu()
             Log.log("health: \(status.label)")
-            if status == .up { self.retryPending(auto: true) } // server recovered → drain short buffered takes
+            if status == .up { self.retryPending(auto: true) } // server recovered → drain buffered takes
         }
         health.start()
 
@@ -195,6 +194,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.stopAndTranscribe()
         }
         let s = StreamingClient(settings: settings)
+        s.onEarlyServerError = { [weak self, weak s] error in
+            guard let self, let s else { return }
+            DispatchQueue.main.async { self.stopRecordingAfterEarlyStreamError(error, stream: s) }
+        }
         capture.onFrame = { [weak s] frame in s?.sendFrame(frame) }
         do {
             try s.open()
@@ -225,6 +228,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.level = 0
         appState.phase = .idle
         Log.log("record: cancelled by user (discarded, nothing transcribed)")
+    }
+
+    private func stopRecordingAfterEarlyStreamError(_ error: StreamingClient.StreamError, stream failedStream: StreamingClient) {
+        guard appState.phase == .recording, stream === failedStream else { return }
+        removeEscapeMonitor()
+        recordingStartedAt = nil
+        let pcm = capture.stop()
+        failedStream.cancel()
+        stream = nil
+        appState.level = 0
+
+        let werr = WisprError.from(error)
+        if pcm.count >= 16_000, werr.shouldBuffer {
+            pending.add(wav: WAV.fromPCM(pcm), reason: werr.userMessage)
+            appState.pendingCount = pending.count
+            refreshMenu()
+            Log.log("buffered partial take for retry (pending=\(pending.count)) — stream failed before ready: \(werr.userMessage)")
+        } else {
+            Log.log("record: stopped early; stream failed before ready — \(werr.userMessage)")
+        }
+        appState.phase = .error(werr.userMessage)
+        scheduleIdle(after: 3)
     }
 
     /// Esc cancels while recording. Global+local NSEvent monitors (we hold Accessibility); the
@@ -376,10 +401,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func retryPending(auto: Bool) {
         guard !retrying, !appState.isBusy, appState.pendingCount > 0 else { return }
-        if auto, pending.oldest(maxDurationSeconds: autoRetryMaxAudioSeconds) == nil {
-            Log.log("retry: skipped auto retry; only long pending recordings remain")
-            return
-        }
         retrying = true
         let restorePhase = appState.phase
         appState.phase = .transcribing
@@ -388,9 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             guard let self else { return }
             let recovered = Counter() // reference box (avoids capturing a mutated `var` concurrently)
-            while let item = await MainActor.run(body: {
-                auto ? self.pending.oldest(maxDurationSeconds: self.autoRetryMaxAudioSeconds) : self.pending.oldest()
-            }) {
+            while let item = await MainActor.run(body: { self.pending.oldest() }) {
                 guard let wav = await MainActor.run(body: { self.pending.wav(for: item) }) else {
                     await MainActor.run { self.pending.remove(item); self.appState.pendingCount = self.pending.count }
                     continue

@@ -34,6 +34,8 @@ final class StreamingClient {
     private var continuation: CheckedContinuation<String, Error>?
     private var pending: Result<String, Error>?
     private var settled = false
+    private var finishRequested = false
+    var onEarlyServerError: ((StreamError) -> Void)?
 
     // Hold frames until the server says `ready`, then flush — otherwise audio sent during the
     // server's start→ready window (dictation engaging) is dropped and the start is lost.
@@ -94,6 +96,7 @@ final class StreamingClient {
 
     /// Send `{stop}` and await the `{final}` transcript.
     func finish() async throws -> String {
+        finishRequested = true
         sendText(#"{"type":"stop"}"#)
         let timeout = DispatchWorkItem { [weak self] in
             self?.settle(.failure(StreamError.noFinal))
@@ -170,6 +173,12 @@ final class StreamingClient {
             resume(with: result, cont: cont)
         } else {
             pending = result
+        }
+        if case .failure(let err) = result,
+           !finishRequested,
+           let streamErr = err as? StreamError,
+           streamErr.isSemantic {
+            onEarlyServerError?(streamErr)
         }
         if case .success = result { task = nil }
     }

@@ -57,13 +57,48 @@ function lastResult() { return _last; }
 
 // --- browser page (reused; reconnects if dropped) ---------------------------
 let _browser = null, _page = null;
+const dictationService_URL = 'DICTATION_SERVICE_URL/';
+const isdictationServicePage = page => page && !page.isClosed() && page.url().startsWith(dictationService_URL);
+const isBlankPage = page => {
+  if (!page || page.isClosed()) return false;
+  const url = page.url();
+  return url === 'about:blank' || url === 'chrome://new-tab-page/' || url === 'chrome://newtab/';
+};
+
+async function normalizeServicePages(ctx, preferred = null) {
+  let pages = ctx.pages().filter(p => !p.isClosed());
+  let chatPages = pages.filter(isdictationServicePage);
+  let page = isdictationServicePage(preferred) ? preferred : chatPages[0];
+
+  if (!page) {
+    page = pages.find(isBlankPage) || await ctx.newPage();
+    if (!isdictationServicePage(page)) await page.goto(dictationService_URL);
+  }
+
+  chatPages = ctx.pages().filter(isdictationServicePage);
+  const duplicateChat = chatPages.filter(p => p !== page);
+  if (duplicateChat.length) console.warn(`[wispr-dictate] closing ${duplicateChat.length} duplicate dictation service service tab(s)`);
+  await Promise.all(duplicateChat.map(p => p.close().catch(() => {})));
+
+  const blankPages = ctx.pages().filter(p => p !== page && isBlankPage(p));
+  await Promise.all(blankPages.map(p => p.close().catch(() => {})));
+  return page;
+}
+
 async function getPage() {
-  if (_page && !_page.isClosed()) { try { await _page.evaluate(() => 1); return _page; } catch (_) { _page = null; } }
+  if (_page && !_page.isClosed()) {
+    try {
+      await _page.evaluate(() => 1);
+      _page = await normalizeServicePages(_page.context(), _page);
+      return _page;
+    } catch (_) {
+      _page = null;
+    }
+  }
   if (_browser) { try { await _browser.close(); } catch (_) {} _browser = null; }
   _browser = await chromium.connectOverCDP(CDP, { timeout: 10000 });
   const ctx = _browser.contexts()[0];
-  _page = ctx.pages().find(p => p.url().startsWith('DICTATION_SERVICE_URL/'));
-  if (!_page) { _page = await ctx.newPage(); await _page.goto('DICTATION_SERVICE_URL/'); }
+  _page = await normalizeServicePages(ctx);
   return _page;
 }
 
@@ -218,13 +253,19 @@ async function transcribeFile(file, audio = {}, options = {}) {
 // --- streaming mode ---------------------------------------------------------
 async function startStream() {
   if (!tryAcquire()) { const e = new Error('busy'); e.code = 'busy'; throw e; }
+  const t0 = Date.now();
   try {
     const page = await getPage();
     await startDictation(page);
     const pacat = spawnPacat();
     pacat.on('error', () => {});
     return { page, pacat, t0: Date.now() };
-  } catch (e) { release(); throw e; }
+  } catch (e) {
+    recordResult(false, Date.now() - t0, `stream start failed: ${e.message}`);
+    console.warn(`[wispr-dictate] stream start failed: ${e.stack || e.message}`);
+    release();
+    throw e;
+  }
 }
 function pushAudio(s, buf) { try { if (s && s.pacat && s.pacat.stdin.writable) s.pacat.stdin.write(buf); } catch (_) {} }
 async function stopStream(s) {
@@ -262,8 +303,7 @@ async function probe() {
   let b;
   try {
     b = await chromium.connectOverCDP(CDP, { timeout: 4000 });
-    const page = b.contexts()[0].pages().find(p => p.url().startsWith('DICTATION_SERVICE_URL/'));
-    if (!page) return { browser: 'up', dictationService: 'no-tab' };
+    const page = await normalizeServicePages(b.contexts()[0]);
     const st = await page.evaluate(() => {
       const txt = el => (el.innerText || el.textContent || '').trim();
       const loggedOut = [...document.querySelectorAll('button,a,[role="button"]')].some(e => /^log in$|^sign up for free$/i.test(txt(e)));
