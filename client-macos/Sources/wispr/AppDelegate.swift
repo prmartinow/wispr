@@ -327,11 +327,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.level = 0
 
         let werr = WisprError.from(error)
-        if pcm.count >= 16_000, werr.shouldBuffer {
+        if pcm.count >= safetySaveMinPCMBytes {
+            let reason = werr.shouldBuffer ? werr.userMessage : "Recording stopped unexpectedly — saved locally"
+            pending.add(wav: WAV.fromPCM(pcm), reason: reason)
+            appState.pendingCount = pending.count
+            refreshMenu()
+            Log.log("buffered partial take after stream failure (pending=\(pending.count), bytes=\(pcm.count)) — \(werr.userMessage)")
+        } else if pcm.count >= 16_000, werr.shouldBuffer {
             pending.add(wav: WAV.fromPCM(pcm), reason: werr.userMessage)
             appState.pendingCount = pending.count
             refreshMenu()
-            Log.log("buffered partial take for retry (pending=\(pending.count)) — stream failed while recording: \(werr.userMessage)")
+            Log.log("buffered short partial take for retry (pending=\(pending.count), bytes=\(pcm.count)) — \(werr.userMessage)")
         } else {
             Log.log("record: stopped early; stream failed while recording — \(werr.userMessage)")
         }
