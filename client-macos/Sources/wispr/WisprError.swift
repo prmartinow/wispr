@@ -42,7 +42,8 @@ enum WisprError: Error {
             switch s {
             case .server(let code, _): return fromCode(code)
             case .badURL:              return .other("Bad server URL")
-            case .transport, .noFinal: return .unreachable
+            case .transport, .noReady, .noFinal: return .unreachable
+            case .cancelled:           return .other("Cancelled")
             }
         }
         if let c = error as? TranscriptionClient.ClientError {

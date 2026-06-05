@@ -3,6 +3,7 @@ import SwiftUI
 /// The dictation state machine, observed by the menu bar, the HUD, and the windows.
 enum DictationPhase: Equatable {
     case idle
+    case preparing
     case recording
     case transcribing
     case inserted
@@ -32,7 +33,7 @@ final class AppState: ObservableObject {
 
     var isBusy: Bool {
         switch phase {
-        case .recording, .transcribing: return true
+        case .preparing, .recording, .transcribing: return true
         default: return false
         }
     }

@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let network = NetworkMonitor()
     private let capture = AudioStreamCapture()
     private var stream: StreamingClient?
+    private var preparingStream: StreamingClient?
 
     private var statusItem: NSStatusItem!
     private var toggleItem: NSMenuItem!
@@ -35,6 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var startingRecording = false
     private var recordingStartedAt: Date?
     private let toggleStopDebounce: TimeInterval = 0.35
+    private let preflightEndpointTimeout: TimeInterval = 3
+    private let preflightHealthTimeout: TimeInterval = 4
+    private let streamPrepareTimeout: TimeInterval = 12
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hud = HUDController(state: appState,
@@ -132,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let (symbol, tint): (String, NSColor?)
         switch phase {
         case .idle:         (symbol, tint) = ("waveform", nil)
+        case .preparing:    (symbol, tint) = ("antenna.radiowaves.left.and.right", .systemYellow)
         case .recording:    (symbol, tint) = ("mic.fill", .systemRed)
         case .transcribing: (symbol, tint) = ("waveform", .systemYellow)
         case .inserted:     (symbol, tint) = ("checkmark.circle.fill", .systemGreen)
@@ -162,6 +167,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.log("HotKey: ignored while pending retry is running")
             return
         }
+        if appState.phase == .preparing {
+            cancelPreparing()
+            return
+        }
         if appState.phase == .transcribing { return } // serialized server-side
         if startingRecording { return }
         if appState.phase == .recording,
@@ -182,43 +191,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !appState.isBusy, !startingRecording else { return }
         startingRecording = true
         idleWork?.cancel()
+        appState.level = 0
+        appState.elapsed = 0
+        appState.phase = .preparing
+        installEscapeMonitor() // Esc cancels while preparing or recording
         let frontmost = NSWorkspace.shared.frontmostApplication
         pasteTarget = FocusedField.capture(frontmost: frontmost)
-        capture.onMeter = { [weak self] level, elapsed in
-            self?.appState.level = level
-            self?.appState.elapsed = elapsed
+        let target = FocusedField.targetSummary(pasteTarget)
+        Log.log("record: preflight begin endpoint=\(settings.activeServerURL.absoluteString) cachedHealth=\(appState.serverStatus.label) input=\(settings.inputDeviceUID ?? "system default") target=\(target)")
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await self.endpoints.selectNow(timeout: self.preflightEndpointTimeout, reason: "preflight", log: true, preferCurrent: true)
+            guard self.appState.phase == .preparing, self.startingRecording else { return }
+
+            let status = await self.health.checkNow(reason: "preflight", timeout: self.preflightHealthTimeout)
+            guard self.appState.phase == .preparing, self.startingRecording else { return }
+            guard status.isReady else {
+                self.failPreflight(status: status)
+                return
+            }
+
+            let s = StreamingClient(settings: self.settings)
+            s.onEarlyServerError = { [weak self, weak s] error in
+                guard let self, let s else { return }
+                DispatchQueue.main.async { self.stopRecordingAfterStreamError(error, stream: s) }
+            }
+            self.preparingStream = s
+            let t0 = Date()
+            do {
+                try await s.prepare(timeout: self.streamPrepareTimeout)
+                self.startCaptureAfterPrepare(stream: s, prepareStartedAt: t0)
+            } catch {
+                self.failPrepare(error, stream: s, prepareStartedAt: t0)
+            }
         }
-        capture.onLimitReached = { [weak self] in
-            guard let self, self.appState.phase == .recording else { return }
-            Log.log("record: 10-minute cap reached; stopping automatically")
-            self.stopAndTranscribe()
-        }
-        let s = StreamingClient(settings: settings)
-        s.onEarlyServerError = { [weak self, weak s] error in
-            guard let self, let s else { return }
-            DispatchQueue.main.async { self.stopRecordingAfterEarlyStreamError(error, stream: s) }
-        }
-        capture.onFrame = { [weak s] frame in s?.sendFrame(frame) }
-        do {
-            try s.open()
-            try capture.start(inputUID: settings.inputDeviceUID)
-            stream = s
-            recordingStartedAt = Date()
-            appState.phase = .recording
-            installEscapeMonitor() // Esc cancels while recording
-            Log.log("record: started (streaming, input=\(settings.inputDeviceUID ?? "system default"))")
-        } catch {
-            s.cancel()
-            Log.log("record: start FAILED \(error)")
-            appState.phase = .error(WisprError.mic("Microphone unavailable").userMessage)
-            scheduleIdle(after: 2.5)
-        }
-        startingRecording = false
     }
 
     /// Abort the current recording without transcribing (HUD ✕ or Esc) — mirrors the dictate
     /// service's "Cancel dictation". Disconnecting the stream makes the server cancel + free the mic.
     private func cancelRecording() {
+        if appState.phase == .preparing {
+            cancelPreparing()
+            return
+        }
         guard appState.phase == .recording else { return }
         removeEscapeMonitor()
         recordingStartedAt = nil
@@ -230,7 +246,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.log("record: cancelled by user (discarded, nothing transcribed)")
     }
 
-    private func stopRecordingAfterEarlyStreamError(_ error: StreamingClient.StreamError, stream failedStream: StreamingClient) {
+    private func cancelPreparing() {
+        guard appState.phase == .preparing || startingRecording else { return }
+        preparingStream?.cancel()
+        preparingStream = nil
+        startingRecording = false
+        removeEscapeMonitor()
+        appState.level = 0
+        appState.elapsed = 0
+        appState.phase = .idle
+        Log.log("record: preflight cancelled")
+    }
+
+    private func failPreflight(status: ServerStatus) {
+        preparingStream?.cancel()
+        preparingStream = nil
+        startingRecording = false
+        removeEscapeMonitor()
+        let message = preflightMessage(for: status)
+        appState.phase = .error(message)
+        Log.log("record: preflight blocked status=\(status.label) endpoint=\(settings.activeServerURL.absoluteString) message=\(message)")
+        scheduleIdle(after: 3)
+    }
+
+    private func startCaptureAfterPrepare(stream preparedStream: StreamingClient, prepareStartedAt: Date) {
+        guard appState.phase == .preparing, preparingStream === preparedStream, startingRecording else {
+            preparedStream.cancel()
+            return
+        }
+        capture.onMeter = { [weak self] level, elapsed in
+            self?.appState.level = level
+            self?.appState.elapsed = elapsed
+        }
+        capture.onLimitReached = { [weak self] in
+            guard let self, self.appState.phase == .recording else { return }
+            Log.log("record: 10-minute cap reached; stopping automatically")
+            self.stopAndTranscribe()
+        }
+        capture.onFrame = { [weak preparedStream] frame in preparedStream?.sendFrame(frame) }
+        do {
+            try capture.start(inputUID: settings.inputDeviceUID)
+            stream = preparedStream
+            preparingStream = nil
+            startingRecording = false
+            recordingStartedAt = Date()
+            appState.phase = .recording
+            Log.log("record: started after preflight in \(Int(Date().timeIntervalSince(prepareStartedAt) * 1000))ms (endpoint=\(settings.activeServerURL.absoluteString), input=\(settings.inputDeviceUID ?? "system default"))")
+        } catch {
+            preparedStream.cancel()
+            preparingStream = nil
+            startingRecording = false
+            removeEscapeMonitor()
+            Log.log("record: capture start FAILED after server ready — \(error)")
+            appState.phase = .error(WisprError.mic("Microphone unavailable").userMessage)
+            scheduleIdle(after: 2.5)
+        }
+    }
+
+    private func failPrepare(_ error: Error, stream failedStream: StreamingClient, prepareStartedAt: Date) {
+        guard appState.phase == .preparing, preparingStream === failedStream else { return }
+        failedStream.cancel()
+        preparingStream = nil
+        startingRecording = false
+        removeEscapeMonitor()
+        let werr = WisprError.from(error)
+        Log.log("record: stream preflight FAILED in \(Int(Date().timeIntervalSince(prepareStartedAt) * 1000))ms endpoint=\(settings.activeServerURL.absoluteString) error=\(werr.userMessage) raw=\(error)")
+        health.check()
+        appState.phase = .error(werr.userMessage)
+        scheduleIdle(after: 3)
+    }
+
+    private func stopRecordingAfterStreamError(_ error: StreamingClient.StreamError, stream failedStream: StreamingClient) {
         guard appState.phase == .recording, stream === failedStream else { return }
         removeEscapeMonitor()
         recordingStartedAt = nil
@@ -244,9 +330,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pending.add(wav: WAV.fromPCM(pcm), reason: werr.userMessage)
             appState.pendingCount = pending.count
             refreshMenu()
-            Log.log("buffered partial take for retry (pending=\(pending.count)) — stream failed before ready: \(werr.userMessage)")
+            Log.log("buffered partial take for retry (pending=\(pending.count)) — stream failed while recording: \(werr.userMessage)")
         } else {
-            Log.log("record: stopped early; stream failed before ready — \(werr.userMessage)")
+            Log.log("record: stopped early; stream failed while recording — \(werr.userMessage)")
         }
         appState.phase = .error(werr.userMessage)
         scheduleIdle(after: 3)
@@ -270,6 +356,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func stopAndTranscribe() {
+        if appState.phase == .preparing {
+            cancelPreparing()
+            return
+        }
         guard appState.phase == .recording else { return }
         removeEscapeMonitor()
         recordingStartedAt = nil
@@ -449,10 +539,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         idleWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if self.appState.phase != .recording { self.appState.phase = .idle }
+            if self.appState.phase != .preparing, self.appState.phase != .recording { self.appState.phase = .idle }
         }
         idleWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func preflightMessage(for status: ServerStatus) -> String {
+        switch status {
+        case .unknown: return "Server not ready"
+        case .up: return "Server ready"
+        case .loading: return "Server warming up"
+        case .loggedOut: return "dictation service logged out"
+        case .backendDown: return "Backend down"
+        case .serverOffline: return "Server has no internet"
+        case .unauthorized: return "Unauthorized"
+        case .unreachable: return "Server unreachable"
+        }
     }
 
     // MARK: - Windows

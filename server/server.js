@@ -338,18 +338,21 @@ function attachUpgrade(srv) {
     if (req.url.split('?')[0] !== '/v1/stream') { socket.destroy(); return; }
     if (!tlsClientOk(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
     if (!bearerOk(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
-    wss.handleUpgrade(req, socket, head, ws => handleStream(ws));
+    wss.handleUpgrade(req, socket, head, ws => handleStream(ws, req));
   });
 }
 
-function handleStream(ws) {
+function handleStream(ws, req) {
+  const streamId = crypto.randomBytes(4).toString('hex');
   let startP = null, session = null, stopped = false, lastActivity = Date.now(), openedAt = Date.now(), startedAt = 0, alive = true;
   const pre = []; // binary frames that arrive before the session is ready -> flushed on ready
   let preBytes = 0, streamBytes = 0, closing = false;
+  console.log(`[wispr-stream ${streamId}] open remote=${req.socket.remoteAddress || '?'} tls=${!!req.socket.encrypted}`);
   const send = obj => { try { ws.send(JSON.stringify(obj)); } catch (_) {} };
   const abort = async (code, message) => {
     if (closing) return;
     closing = true;
+    console.warn(`[wispr-stream ${streamId}] abort code=${code || 'close'} message=${message || ''} started=${!!startP} ready=${!!session} stopped=${stopped} bytes=${streamBytes} preBytes=${preBytes} age=${Date.now() - openedAt}ms`);
     if (session) { const s = session; session = null; await dictate.abortStream(s).catch(() => {}); }
     if (code) send({ type: 'error', code, message });
     try { ws.close(); } catch (_) {}
@@ -375,6 +378,7 @@ function handleStream(ws) {
     if (msg.type === 'start') {
       if (startP) return;                          // extra start fields (format/lang) are ignored
       startedAt = Date.now();
+      console.log(`[wispr-stream ${streamId}] start`);
       startP = dictate.startStream();
       try {
         const s = await startP;
@@ -383,23 +387,35 @@ function handleStream(ws) {
           return;
         }
         session = s;
+        const flushedBytes = preBytes;
+        const flushedFrames = pre.length;
         for (const b of pre.splice(0)) dictate.pushAudio(session, b);
         preBytes = 0;
         send({ type: 'ready' });
+        console.log(`[wispr-stream ${streamId}] ready in ${Date.now() - startedAt}ms flushedFrames=${flushedFrames} flushedBytes=${flushedBytes}`);
       }
       catch (e) {
         if (!closing) {
+          console.warn(`[wispr-stream ${streamId}] start failed in ${Date.now() - startedAt}ms code=${e.code || 'backend_unavailable'} message=${String(e.message || e)}`);
           send({ type: 'error', code: e.code || 'backend_unavailable', message: String(e.message || e) });
           try { ws.close(); } catch (_) {}
         }
       }
     } else if (msg.type === 'stop') {
       if (stopped) return; stopped = true;
+      console.log(`[wispr-stream ${streamId}] stop bytes=${streamBytes} age=${Date.now() - openedAt}ms`);
       try { if (startP) await startP; } catch (_) {}
       if (!session) { send({ type: 'error', code: 'bad_request', message: 'no active stream' }); try { ws.close(); } catch (_) {} return; }
       const s = session; session = null;
-      try { const r = await dictate.stopStream(s); send({ type: 'final', text: r.text, duration_ms: r.duration_ms }); }
-      catch (e) { send({ type: 'error', code: 'transcription_error', message: String(e.message || e) }); }
+      try {
+        const r = await dictate.stopStream(s);
+        send({ type: 'final', text: r.text, duration_ms: r.duration_ms });
+        console.log(`[wispr-stream ${streamId}] final text=${r.text ? r.text.length : 0} duration=${r.duration_ms}ms`);
+      }
+      catch (e) {
+        console.warn(`[wispr-stream ${streamId}] stop failed code=${e.code || 'transcription_error'} message=${String(e.message || e)}`);
+        send({ type: 'error', code: 'transcription_error', message: String(e.message || e) });
+      }
       try { ws.close(); } catch (_) {}
     }
   });
@@ -421,8 +437,9 @@ function handleStream(ws) {
       session = null;
       dictate.abortStream(s).catch(() => {});
     }
+    console.log(`[wispr-stream ${streamId}] close stopped=${stopped} bytes=${streamBytes} age=${Date.now() - openedAt}ms`);
   });
-  ws.on('error', () => {});
+  ws.on('error', e => { console.warn(`[wispr-stream ${streamId}] socket error ${e.message || e}`); });
 }
 
 function loadLanTlsOptions() {

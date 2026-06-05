@@ -9,7 +9,9 @@ final class StreamingClient {
         case badURL
         case transport(Error)          // couldn't connect / socket dropped → batch fallback
         case server(code: String, message: String) // semantic error from the server
+        case noReady
         case noFinal
+        case cancelled
 
         var isSemantic: Bool { if case .server = self { return true } else { return false } }
         var displayMessage: String {
@@ -21,6 +23,8 @@ final class StreamingClient {
                 case "transcription_error": return "Transcription failed"
                 default: return "Server: \(code)"
                 }
+            case .noReady: return "Dictation did not become ready"
+            case .cancelled: return "Cancelled"
             default: return "Streaming failed"
             }
         }
@@ -33,6 +37,8 @@ final class StreamingClient {
     // Final/error may arrive before finish() is awaited (e.g. an early `busy`); stash it.
     private var continuation: CheckedContinuation<String, Error>?
     private var pending: Result<String, Error>?
+    private var readyContinuation: CheckedContinuation<Void, Error>?
+    private var readyResult: Result<Void, Error>?
     private var settled = false
     private var finishRequested = false
     var onEarlyServerError: ((StreamError) -> Void)?
@@ -45,14 +51,20 @@ final class StreamingClient {
     private var preReady: [Data] = []
     private var preReadyBytes = 0
     private var loggedPreReadyDrop = false
+    private var openedAt = Date()
 
     init(settings: Settings) {
         self.settings = settings
     }
 
-    /// Open the socket and send `{start}`. Returns immediately; frames may be sent right away
-    /// (the server buffers anything that arrives before `ready`).
-    func open() throws {
+    /// Open the socket, send `{start}`, and wait until the server has clicked dictation service's dictation
+    /// button and is ready to receive audio. The Mac mic is only started after this returns.
+    func prepare(timeout: TimeInterval = 12) async throws {
+        try open()
+        try await waitUntilReady(timeout: timeout)
+    }
+
+    private func open() throws {
         guard EndpointPolicy.allowed(settings.activeServerURL) else { throw StreamError.badURL }
         guard var comps = URLComponents(url: settings.activeServerURL, resolvingAgainstBaseURL: false)
         else { throw StreamError.badURL }
@@ -63,11 +75,32 @@ final class StreamingClient {
         var req = URLRequest(url: url)
         req.timeoutInterval = 780
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
+        openedAt = Date()
+        Log.log("stream: opening \(url.absoluteString)")
         let t = session.webSocketTask(with: req)
         task = t
         t.resume()
         receiveLoop()
         sendText(#"{"type":"start"}"#)
+    }
+
+    private func waitUntilReady(timeout seconds: TimeInterval) async throws {
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.settleReady(.failure(StreamError.noReady))
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: timeout)
+        defer { timeout.cancel() }
+
+        return try await withCheckedThrowingContinuation { cont in
+            lock.lock()
+            if let readyResult {
+                lock.unlock()
+                resumeReady(with: readyResult, cont: cont)
+            } else {
+                readyContinuation = cont
+                lock.unlock()
+            }
+        }
     }
 
     func sendFrame(_ data: Data) {
@@ -116,6 +149,7 @@ final class StreamingClient {
     func cancel() {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        settleReady(.failure(StreamError.cancelled))
     }
 
     // MARK: - Internals
@@ -129,7 +163,10 @@ final class StreamingClient {
             guard let self else { return }
             switch result {
             case .failure(let err):
-                self.settle(.failure(StreamError.transport(err)))
+                let streamError = StreamError.transport(err)
+                Log.log("stream: receive failed after \(Int(Date().timeIntervalSince(self.openedAt) * 1000))ms — \(err.localizedDescription)")
+                self.settleReady(.failure(streamError))
+                self.settle(.failure(streamError))
             case .success(let message):
                 if case let .string(text) = message { self.handle(text: text) }
                 self.receiveLoop()
@@ -149,16 +186,37 @@ final class StreamingClient {
             preReady.removeAll()
             preReadyBytes = 0
             lock.unlock()
-            Log.log("stream: ready (flushing \(buffered.count) buffered frames)")
+            Log.log("stream: ready in \(Int(Date().timeIntervalSince(openedAt) * 1000))ms (flushing \(buffered.count) buffered frames)")
             for f in buffered { rawSend(f) }
+            settleReady(.success(()))
         case "final":
             settle(.success(obj["text"] as? String ?? ""))
         case "error":
             let code = obj["code"] as? String ?? "error"
-            settle(.failure(StreamError.server(code: code, message: obj["message"] as? String ?? "")))
+            let message = obj["message"] as? String ?? ""
+            let error = StreamError.server(code: code, message: message)
+            Log.log("stream: server error before finish code=\(code) message=\(message) ready=\(ready)")
+            settleReady(.failure(error))
+            settle(.failure(error))
         default:
             break // ignore unknown (forward-compat)
         }
+    }
+
+    private func settleReady(_ result: Result<Void, Error>) {
+        lock.lock()
+        if let cont = readyContinuation {
+            readyContinuation = nil
+            lock.unlock()
+            resumeReady(with: result, cont: cont)
+            return
+        }
+        guard readyResult == nil else {
+            lock.unlock()
+            return
+        }
+        readyResult = result
+        lock.unlock()
     }
 
     private func settle(_ result: Result<String, Error>) {
@@ -186,6 +244,13 @@ final class StreamingClient {
     private func resume(with result: Result<String, Error>, cont: CheckedContinuation<String, Error>) {
         switch result {
         case .success(let text): cont.resume(returning: text)
+        case .failure(let err): cont.resume(throwing: err)
+        }
+    }
+
+    private func resumeReady(with result: Result<Void, Error>, cont: CheckedContinuation<Void, Error>) {
+        switch result {
+        case .success: cont.resume()
         case .failure(let err): cont.resume(throwing: err)
         }
     }

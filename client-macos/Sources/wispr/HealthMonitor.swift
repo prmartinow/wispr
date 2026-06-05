@@ -68,6 +68,35 @@ final class HealthMonitor {
         }.resume()
     }
 
+    func checkNow(reason: String, timeout: TimeInterval = 6) async -> ServerStatus {
+        let url = settings.activeServerURL.appendingPathComponent("healthz")
+        let t0 = Date()
+        var req = URLRequest(url: url)
+        req.timeoutInterval = timeout
+        req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
+
+        let status: ServerStatus
+        let summary: String
+        do {
+            let (data, resp) = try await Net.session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode
+            status = Self.classify(status: code, data: data)
+            summary = Self.summary(status: code, data: data, error: nil)
+        } catch {
+            status = .unreachable
+            summary = "error=\(error.localizedDescription)"
+        }
+
+        let elapsedMs = Int(Date().timeIntervalSince(t0) * 1000)
+        Log.log("health: \(reason) \(url.absoluteString) -> \(status.label) \(summary) in \(elapsedMs)ms")
+        await MainActor.run {
+            let changed = self.status != status
+            self.status = status
+            if changed { self.onChange?(status) }
+        }
+        return status
+    }
+
     static func classify(status code: Int?, data: Data?) -> ServerStatus {
         if code == 401 { return .unauthorized }
         guard code == 200, let data,
@@ -83,5 +112,25 @@ final class HealthMonitor {
         if internet == "down" { return .serverOffline }
         if dictationService == "ready" { return .up }
         return .backendDown
+    }
+
+    private static func summary(status code: Int?, data: Data?, error: Error?) -> String {
+        if let error { return "error=\(error.localizedDescription)" }
+        guard let data,
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "http=\(code ?? 0)"
+        }
+        let browser = o["browser"] as? String ?? "?"
+        let dictationService = o["dictationService"] as? String ?? "?"
+        let mic = o["mic"] as? String ?? "?"
+        let internet = o["internet"] as? String ?? "?"
+        let busy = (o["busy"] as? Bool).map(String.init) ?? "?"
+        let last = (o["lastDictation"] as? [String: Any]).flatMap { last -> String? in
+            guard let ok = last["ok"] as? Bool else { return nil }
+            let ms = last["ms"] as? Int ?? 0
+            let err = last["error"] as? String
+            return "last.ok=\(ok) last.ms=\(ms)" + (err.map { " last.error=\($0)" } ?? "")
+        } ?? "last=nil"
+        return "http=\(code ?? 0) browser=\(browser) dictationService=\(dictationService) mic=\(mic) internet=\(internet) busy=\(busy) \(last)"
     }
 }

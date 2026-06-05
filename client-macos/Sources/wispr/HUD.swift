@@ -28,7 +28,7 @@ final class HoverHostView: NSView {
 }
 
 /// The persistent floating pill at bottom-center. Compact when idle; expands on hover (Start)
-/// and while recording (waveform + Stop) / transcribing.
+/// and while preparing / recording (waveform + Stop) / transcribing.
 final class HUDController {
     private let panel: HUDPanel
     private let appState: AppState
@@ -97,6 +97,7 @@ final class HUDController {
     private static func size(phase: DictationPhase, hovering: Bool) -> NSSize {
         switch phase {
         case .idle:         return hovering ? NSSize(width: 222, height: 42) : NSSize(width: 72, height: 26)
+        case .preparing:    return NSSize(width: 260, height: 46)
         case .recording:    return NSSize(width: 372, height: 54)
         case .transcribing: return NSSize(width: 240, height: 46)
         case .inserted, .copied, .available, .error: return NSSize(width: 300, height: 46)
@@ -143,6 +144,15 @@ struct HUDView: View {
                             .foregroundStyle(.orange.opacity(0.85))
                     }
                 }
+            }
+        case .preparing:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("checking server…").font(.callout)
+                Spacer(minLength: 0)
+                Button(action: onCancel) { Image(systemName: "xmark") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Cancel (Esc)")
             }
         case .recording:
             HStack(spacing: 8) {
