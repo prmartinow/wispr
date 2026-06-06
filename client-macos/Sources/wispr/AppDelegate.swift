@@ -438,10 +438,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .failure(let werr):
                 await MainActor.run {
                     if let safetyItem {
-                        self.pending.update(safetyItem, reason: werr.userMessage)
-                        self.appState.pendingCount = self.pending.count
-                        self.refreshMenu()
-                        Log.log("transcribe: kept safety copy for retry (pending=\(self.pending.count)) — \(werr.userMessage)")
+                        if werr.shouldBuffer {
+                            self.pending.update(safetyItem, reason: werr.userMessage)
+                            self.appState.pendingCount = self.pending.count
+                            self.refreshMenu()
+                            Log.log("transcribe: kept safety copy for retry (pending=\(self.pending.count)) — \(werr.userMessage)")
+                        } else {
+                            self.pending.remove(safetyItem)
+                            self.appState.pendingCount = self.pending.count
+                            self.refreshMenu()
+                            Log.log("transcribe: removed safety copy after terminal failure (pending=\(self.pending.count)) — \(werr.userMessage)")
+                        }
                     } else if werr.shouldBuffer {
                         self.pending.add(wav: WAV.fromPCM(pcm), reason: werr.userMessage)
                         self.appState.pendingCount = self.pending.count
