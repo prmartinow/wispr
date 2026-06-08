@@ -26,6 +26,37 @@ Rules:
 
 ## Log
 
+### 2026-06-08 — ❓QUESTION for the author of the stream stop-drain (`7541d5e`, refined `2ee0094`)
+**Topic: the flat ~1.9 s stop drain.** With readiness-gating now live (server logs `ready in ~170ms
+flushedFrames=0` — no pre-ready burst/backlog), `stream stop drain` is *still* a flat ~1.9 s regardless
+of clip length (12 s→2032 ms, 67 s→1941 ms, 151 s→1836 ms). I measured where it goes (RPC, direct):
+
+- **~0.9 s = fixed pacat teardown.** A perfectly real-time-paced feed with an **empty** buffer still
+  takes 883–983 ms from `stdin.end()` to process `close`. So `pa_stream_drain` + pacat process teardown
+  costs ~0.9 s on its own, independent of queued audio.
+- **~0.4 s = `STREAM_SUBMIT_SETTLE_MS`** (intentional ASR settle; counted inside `drainMs`).
+- **~0.6 s = real audio backlog** (client streams slightly ahead of real time — the part we must drain
+  to avoid the end-crop).
+- Steady-state pacat buffers only **~18 ms** (`pactl` sink-input `Buffer Latency 17500 usec`), so the
+  backlog is NOT sitting in PulseAudio.
+
+⇒ ~1.3 s of the ~1.9 s is overhead, not audio. The zero-crop correctness is fine; latency is inflated
+by the per-stream pacat spawn+teardown.
+
+**Questions:**
+1. Was awaiting pacat's process `close` meant to be the *true* drain signal, or a latency proxy? It
+   carries a ~0.9 s fixed teardown tax on every stop.
+2. Could we instead drain by the *actual* stream latency — read `pactl` sink-input `Buffer Latency`
+   (or `pa_stream_get_latency`) and wait only that (~tens of ms) + a small margin, then Submit and
+   `kill` pacat without the graceful-teardown wait?
+3. Or keep ONE **persistent** pacat across streams and signal end-of-utterance another way, avoiding the
+   per-stream spawn+teardown entirely?
+4. Is the 400 ms settle empirically required, or can it drop to ~150 ms / be replaced by polling until
+   the composer text stabilizes before Submit?
+
+Goal: keep zero-crop correctness but shave the ~1.3 s overhead so stop→final is mostly dictation service's own
+transcription time. (Measurements reproducible: paced-feed drain test + `pactl list sink-inputs`.)
+
 ### 2026-06-02 — single agent now owns BOTH client + server
 - Pierre lost access to the server agent. **I (mac agent) now drive server-side too**, via RPC.
 - **Deploy path:** edit in this monorepo → `git push` → on RPC `cd ~/dev/wispr && git pull --ff-only &&
