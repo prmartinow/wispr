@@ -19,6 +19,8 @@ EXCLUDES=(
   --exclude='GraphiteDawnCache' --exclude='GPUPersistentCache' --exclude='ShaderCache'
   --exclude='GrShaderCache' --exclude='component_crx_cache' --exclude='extensions_crx_cache'
   --exclude='Safe Browsing' --exclude='*/Cache' --exclude='*/Code Cache' --exclude='*/GPUCache'
+  --exclude='Default/Extensions' --exclude='Default/Local Extension Settings'
+  --exclude='*/blob_storage' --exclude='Default/File System' --exclude='Default/Service Worker'
 )
 for k in $(seq 1 "$N"); do
   DST="~/.wispr/profiles/lanes/${k}-profile"
