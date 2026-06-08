@@ -13,6 +13,23 @@ const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 const CDP = process.env.DICTATE_CDP || 'http://127.0.0.1:9223';
 const SINK = process.env.DICTATE_SINK || 'virtmic';
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
+const BASE_CDP_PORT = Number(process.env.DICTATE_CDP_PORT || 9223);
+
+// Internal batch lanes (k = 1..WISPR_LANES): each is its own Chromium (CDP BASE_CDP_PORT+k) feeding
+// its own virtual mic (virtmic{k}). The live frontend (streaming) always stays on lane 0 (CDP/SINK
+// above); the batch /transcribe path fans out across these lanes so internal callers run concurrently
+// and never block — or cross-talk with — the frontend. WISPR_LANES unset/0 = legacy single-backend
+// behavior (batch shares lane 0). Each lane has its own logged-in profile + tiled window on :95.
+const INTERNAL_LANES = Math.max(0, Number(process.env.WISPR_LANES || 0));
+const _lanes = [];
+for (let k = 1; k <= INTERNAL_LANES; k++) {
+  _lanes.push({ id: k, cdp: `http://127.0.0.1:${BASE_CDP_PORT + k}`, sink: `virtmic${k}`, browser: null, page: null, busy: false });
+}
+function acquireLane() { const l = _lanes.find(x => !x.busy); if (l) { l.busy = true; } return l || null; }
+function internalPoolFull() { return _lanes.length > 0 && _lanes.every(l => l.busy); }
+// Whether a *batch* (/transcribe) request would be rejected right now: all internal lanes busy, or —
+// with no lanes provisioned — the single lane-0 backend is busy. Streaming uses isBusy() (lane 0).
+function batchBusy() { return INTERNAL_LANES > 0 ? internalPoolFull() : _busy; }
 // Stop drain (see COORDINATION 2026-06-08). We must let the unplayed tail render into the mic before
 // Submit, or the last words are cropped — but we must NOT pay pacat's ~0.9s process-teardown tax to
 // learn when that's done. So we account for it directly: we know how many audio bytes we've handed to
@@ -109,6 +126,21 @@ async function getPage() {
   return _page;
 }
 
+// Same as getPage() but for an internal batch lane (its own CDP endpoint + cached browser/page).
+async function getLanePage(lane) {
+  if (lane.page && !lane.page.isClosed()) {
+    try {
+      await lane.page.evaluate(() => 1);
+      lane.page = await normalizeServicePages(lane.page.context(), lane.page);
+      return lane.page;
+    } catch (_) { lane.page = null; }
+  }
+  if (lane.browser) { try { await lane.browser.close(); } catch (_) {} lane.browser = null; }
+  lane.browser = await chromium.connectOverCDP(lane.cdp, { timeout: 10000 });
+  lane.page = await normalizeServicePages(lane.browser.contexts()[0]);
+  return lane.page;
+}
+
 const composerText = page => page.evaluate(() => {
   const c = document.querySelector('#prompt-textarea');
   return c ? (c.innerText || c.textContent || '').trim() : '';
@@ -141,10 +173,10 @@ function killProcessTree(child, signal) {
   try { child.kill(signal); } catch (_) {}
 }
 
-function playWavFile(file, durationMs = 0, signal) {
+function playWavFile(file, durationMs = 0, signal, sink = SINK) {
   return new Promise((resolve, reject) => {
     if (signal && signal.aborted) { reject(makeAbortError()); return; }
-    const p = spawn('paplay', ['--device=' + SINK, file], { env: { ...process.env, XDG_RUNTIME_DIR: XDG }, detached: true });
+    const p = spawn('paplay', ['--device=' + sink, file], { env: { ...process.env, XDG_RUNTIME_DIR: XDG }, detached: true });
     let settled = false;
     let err = ''; p.stderr.on('data', d => (err += d));
     const timeoutMs = Math.max(15000, Math.min(700000, Number(durationMs || 0) + 15000));
@@ -231,16 +263,20 @@ async function transcribe(audioBuffer) {
 }
 
 async function transcribeFile(file, audio = {}, options = {}) {
-  acquireNow();
+  // Batch fans out across internal lanes (1..N); if none are provisioned, fall back to lane 0 (the
+  // legacy single-backend path, shared with streaming via the _busy mutex).
+  const lane = INTERNAL_LANES > 0 ? acquireLane() : null;
+  if (INTERNAL_LANES > 0 && !lane) { const e = new Error('all transcription lanes busy'); e.code = 'busy'; throw e; }
+  if (!lane) acquireNow();
   const durationMs = Number(audio.durationMs || 0);
   const t0 = Date.now();
   const signal = options.signal;
   let page = null;
   try {
     throwIfAborted(signal);
-    page = await getPage();
+    page = lane ? await getLanePage(lane) : await getPage();
     await startDictation(page, signal);
-    await playWavFile(file, durationMs, signal);
+    await playWavFile(file, durationMs, signal, lane ? lane.sink : SINK);
     await abortableSleep(1200, signal);
     const scrapeMs = Math.max(40000, Math.min(180000, Math.round(durationMs * 0.25) + 30000));
     const text = await submitAndScrape(page, scrapeMs, signal);
@@ -253,7 +289,7 @@ async function transcribeFile(file, audio = {}, options = {}) {
     recordResult(false, Date.now() - t0, e.message);
     throw e;
   } finally {
-    release();
+    if (lane) lane.busy = false; else release();
   }
 }
 
@@ -340,7 +376,7 @@ async function probe() {
   } finally { try { await b.close(); } catch (_) {} }
 }
 
-module.exports = { transcribe, transcribeFile, startStream, pushAudio, stopStream, abortStream, probe, isBusy, lastResult };
+module.exports = { transcribe, transcribeFile, startStream, pushAudio, stopStream, abortStream, probe, isBusy, batchBusy, lastResult };
 
 if (require.main === module) {
   const wav = process.argv[2];

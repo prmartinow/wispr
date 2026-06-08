@@ -89,6 +89,8 @@ function statusForError(e) {
       return 504;
     case 'client_closed':
       return 499;
+    case 'busy':
+      return 409;
     default:
       return 503;
   }
@@ -318,7 +320,7 @@ async function handleRequest(req, res) {
 
     if (req.method === 'POST' && url === '/transcribe') {
       if (!bearerOk(req)) return sendErr(res, 401, 'unauthorized', 'missing or invalid bearer token');
-      if (dictate.isBusy()) return sendErr(res, 409, 'busy', 'dictation backend is busy; retry shortly');
+      if (dictate.batchBusy()) return sendErr(res, 409, 'busy', 'all transcription lanes are busy; retry shortly');
       const ct = req.headers['content-type'] || '';
       if (!/^multipart\/form-data/i.test(ct)) return sendErr(res, 415, 'unsupported_media_type', 'expected multipart/form-data');
 

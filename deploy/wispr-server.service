@@ -13,6 +13,9 @@ Environment=LAN_TLS_HOST=0.0.0.0
 Environment=LAN_TLS_KEY=~/.wispr/mtls/rpc-server.key
 Environment=LAN_TLS_CERT=~/.wispr/mtls/rpc-server.crt
 Environment=LAN_TLS_CA=~/.wispr/mtls/ca.crt
+# WISPR_LANES (internal batch concurrency) lives here so the server, virtmic setup, and lane units
+# all share one source of truth. "-" = tolerate the file being absent.
+EnvironmentFile=-~/dev/wispr/deploy/lanes.env
 Environment=REQUIRE_LAN_MTLS=1
 ExecStart=/usr/bin/node ~/dev/wispr/server/server.js
 Restart=always

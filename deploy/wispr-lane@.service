@@ -1,0 +1,14 @@
+[Unit]
+Description=wispr internal transcription lane %i (Chromium on :95, CDP 9223+%i, mic virtmic%i)
+After=vnc-xvfb.service wispr-virtmic.service
+Wants=vnc-xvfb.service wispr-virtmic.service
+
+[Service]
+Type=simple
+ExecStart=~/dev/wispr/deploy/wispr-lane.sh %i
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target
