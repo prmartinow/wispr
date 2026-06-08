@@ -53,3 +53,23 @@ separate from the mac client and independently revocable. Provisioned by
   reload mics manually, also `systemctl --user restart wispr-browser wispr-lane@{1..7}`.
 - Lane count: edit `WISPR_LANES` in `lanes.env`, then re-run `install.sh` (or enable/disable
   `wispr-lane@k` units + `systemctl --user restart wispr-server`).
+
+## Validation findings (carbon-upstream snippets, 2026-06-09)
+
+Tested with `carbon-upstream-v1/demo-artifacts/review-human/audio-snippets` (6 scenes, WAV/16k/mono,
+4–13 s clips), `aligned_text` as reference.
+
+- **Concurrency**: 6 clips fired in parallel over mTLS completed in **16 s** total (serial ≈ 70 s);
+  earlier a full **7-lane** run did 7 in 20 s. Each lane returns ONLY its own clip — zero cross-talk.
+- **Latency**: server-side ≈ `audio_duration + ~6–7 s` (dictation service's transcription dominates). A lane's
+  first request after a restart is slower (cold, no cache).
+- **Accuracy**: essentially **verbatim at the word level** — every content word correct across the set.
+  Deviations are limited to:
+  - **Technical proper-noun casing/spacing** (the main class): `Jupiter Swap`→`JupiterSwap`,
+    `ClickHouse Play`→`ClickHousePlay`, `cargo run`→`Cargo Run`, `Carbon-side`→`carbon side`,
+    `Token Program`→`token program`. It's dictation service *general* dictation, not domain-tuned, so it guesses
+    casing/word-splits for project identifiers. **Callers needing exact identifiers should post-normalize.**
+  - Minor punctuation/casing differences (added commas), and occasionally a small inserted word
+    (e.g. "configuration lives" → "configuration files live").
+  - Some clips contain more speech than their reference utterance → transcript legitimately longer.
+- **Format**: originally 48 kHz-only; now any ffmpeg-decodable input is accepted (transcoded server-side).
