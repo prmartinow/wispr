@@ -4,7 +4,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$HOME/.config/systemd/user"
-chmod +x "$HERE/setup-virtmic.sh" "$HERE/setup-lanes.sh" "$HERE/wispr-lane.sh"
+chmod +x "$HERE/setup-virtmic.sh" "$HERE/setup-lanes.sh" "$HERE/wispr-lane.sh" "$HERE/setup-internal-mtls.sh"
 # shellcheck disable=SC1091
 source "$HERE/lanes.env"
 
@@ -31,6 +31,11 @@ systemctl --user mask pulseaudio.socket pulseaudio.service 2>/dev/null || true
 systemctl --user reset-failed pulseaudio.service 2>/dev/null || true
 
 systemctl --user daemon-reload
+
+# Internal mTLS identity + client-trust bundle MUST exist before the server starts (LAN_TLS_CA points
+# at the bundle and REQUIRE_LAN_MTLS=1 makes a missing file fatal). Idempotent.
+"$HERE/setup-internal-mtls.sh"
+
 systemctl --user enable --now vnc-xvfb.service vnc-x11vnc.service vnc-novnc.service
 systemctl --user enable --now wispr-virtmic.service wispr-browser.service wispr-server.service
 systemctl --user enable --now wispr-virtmic-check.timer wispr-browser-restart.timer

@@ -25,7 +25,7 @@ EXCLUDES=(
 for k in $(seq 1 "$N"); do
   DST="~/.wispr/profiles/lanes/${k}-profile"
   mkdir -p "$DST"
-  rsync -a --delete "${EXCLUDES[@]}" "$SRC"/ "$DST"/
+  rsync -a --delete --delete-excluded "${EXCLUDES[@]}" "$SRC"/ "$DST"/
   rm -f "$DST"/Singleton* "$DST"/Default/Singleton* 2>/dev/null || true
   echo "lane $k profile: $(du -sh "$DST" 2>/dev/null | cut -f1) ($DST)"
 done
