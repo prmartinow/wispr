@@ -30,21 +30,20 @@ function internalPoolFull() { return _lanes.length > 0 && _lanes.every(l => l.bu
 // Whether a *batch* (/transcribe) request would be rejected right now: all internal lanes busy, or —
 // with no lanes provisioned — the single lane-0 backend is busy. Streaming uses isBusy() (lane 0).
 function batchBusy() { return INTERNAL_LANES > 0 ? internalPoolFull() : _busy; }
-// Stop drain (see COORDINATION 2026-06-08). We must let the unplayed tail render into the mic before
-// Submit, or the last words are cropped — but we must NOT pay pacat's ~0.9s process-teardown tax to
-// learn when that's done. So we account for it directly: we know how many audio bytes we've handed to
-// pacat and how long it has been playing at real time, so the unplayed tail is just
-//   tail = audio_bytes/BYTES_PER_MS  −  elapsed_since_first_audio.
-// We wait that (+ a small margin), then Submit, and kill pacat in cleanup without awaiting its close.
-//   - STREAM_TAIL_MARGIN_MS   : safety margin over the computed tail (write/accounting jitter + the
-//                               ~18ms PulseAudio sink-input buffer).
+// Stop drain (see COORDINATION 2026-06-08/09). On Stop we must let the unplayed tail actually render
+// into the mic before clicking Submit, or the last words are cropped.
+//   - default 'drain' mode: close pacat's stdin and wait for its REAL drain-complete (pa_stream_drain
+//     on EOF -> process exit). Correct by construction regardless of pacat startup delay / underruns.
+//   - 'bytes' mode (STREAM_DRAIN_MODE=bytes): estimate the tail as audio_written - elapsed and wait
+//     that + margin, skipping pacat's ~0.9s teardown. Lower latency but it UNDER-waits when pacat's
+//     startup delay exceeds the margin -> intermittent end-clip. Opt-in only.
 //   - STREAM_SUBMIT_SETTLE_MS : brief pause after the tail is rendered so dictation service's ASR finalizes it.
-//   - STREAM_DRAIN_MAX_MS     : hard cap on the wait, just a safety net.
-//   - STREAM_DRAIN_LEGACY=1   : fall back to the old await-pacat-close drain (kept while validating).
+//   - STREAM_TAIL_MARGIN_MS   : ('bytes' mode) safety margin over the estimated tail.
+//   - STREAM_DRAIN_MAX_MS     : hard cap on the drain wait (safety net for a wedged pacat).
+const STREAM_DRAIN_MODE = (process.env.STREAM_DRAIN_MODE || 'drain').toLowerCase();
 const STREAM_DRAIN_MAX_MS = Number(process.env.STREAM_DRAIN_MAX_MS || 15000);
 const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 250);
 const STREAM_TAIL_MARGIN_MS = Number(process.env.STREAM_TAIL_MARGIN_MS || 200);
-const STREAM_DRAIN_LEGACY = process.env.STREAM_DRAIN_LEGACY === '1';
 const BYTES_PER_MS = 48000 * 2 / 1000; // 96 — s16le, mono, 48 kHz
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function makeAbortError() { const e = new Error('client disconnected'); e.code = 'client_closed'; return e; }
@@ -323,23 +322,25 @@ async function stopStream(s) {
   try {
     const drainStarted = Date.now();
     let mode, tailMs = 0, waitMs = 0;
-    if (STREAM_DRAIN_LEGACY) {
-      // Fallback: EOF the pipe and wait for pacat's real drain-complete (process close). Correct, but
-      // carries pacat's ~0.9s teardown tax on every stop.
-      mode = 'legacy-close';
-      await new Promise(res => { try { s.pacat.stdin.end(res); } catch (_) { res(); } });
-      await Promise.race([ new Promise(res => s.pacat.once('close', res)), sleep(STREAM_DRAIN_MAX_MS) ]);
-    } else {
-      // Byte-accounting drain: the unplayed tail is everything we've written minus what has played at
-      // real time since the first audio byte. Wait that (+ margin), then Submit — no teardown wait.
-      mode = 'byte-accounting';
+    if (STREAM_DRAIN_MODE === 'bytes') {
+      // Opt-in low-latency estimate: unplayed tail ~= audio_written - elapsed. Skips pacat's teardown
+      // but UNDER-waits when pacat's startup delay exceeds the margin -> intermittent end-clip.
+      mode = 'bytes';
       const wroteMs = (s.bytesWritten || 0) / BYTES_PER_MS;
       const playedMs = s.firstAudioAt ? (Date.now() - s.firstAudioAt) : 0;
       tailMs = Math.max(0, Math.round(wroteMs - playedMs));
       waitMs = Math.min(STREAM_DRAIN_MAX_MS, tailMs + STREAM_TAIL_MARGIN_MS);
-      try { s.pacat.stdin.end(); } catch (_) {} // EOF so pacat finishes the tail; we don't await its close
+      try { s.pacat.stdin.end(); } catch (_) {}
       await sleep(waitMs);
       console.log(`[wispr-dictate] drain est wrote=${Math.round(wroteMs)}ms played=${playedMs}ms tail=${tailMs}ms wait=${waitMs}ms bytes=${s.bytesWritten || 0}`);
+    } else {
+      // Default: EOF the pipe and wait for pacat's REAL drain-complete (pa_stream_drain on EOF ->
+      // process close), i.e. until PulseAudio has actually rendered every buffered sample into the mic.
+      // Correct regardless of pacat startup delay / network underruns — no end-clip. The cap is only a
+      // safety net for a wedged pacat.
+      mode = 'drain';
+      await new Promise(res => { try { s.pacat.stdin.end(res); } catch (_) { res(); } });
+      await Promise.race([ new Promise(res => s.pacat.once('close', res)), sleep(STREAM_DRAIN_MAX_MS) ]);
     }
     // Brief settle so dictation service's streaming recognizer finalizes the just-rendered tail before Submit.
     if (STREAM_SUBMIT_SETTLE_MS > 0) await sleep(STREAM_SUBMIT_SETTLE_MS);
