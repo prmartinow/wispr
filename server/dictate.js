@@ -13,15 +13,22 @@ const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 const CDP = process.env.DICTATE_CDP || 'http://127.0.0.1:9223';
 const SINK = process.env.DICTATE_SINK || 'virtmic';
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
-// We do NOT use a fixed drain delay. On stop we close pacat's stdin and wait for its *real*
-// drain-complete (pa_stream_drain on EOF → process exit), which is exactly as long as the live
-// stream is behind real time — no more, no less. These two bounds are only safety nets:
-//   - STREAM_DRAIN_MAX_MS : hard cap so a wedged pacat can never hang Stop forever.
-//   - STREAM_SUBMIT_SETTLE_MS : a brief pause after full playout so dictation service's streaming ASR can
-//     ingest the just-played tail before we click Submit (the audio is in the mic; the recognizer
-//     needs a beat to finalize it). Kept small; the heavy lifting is the real drain above.
+// Stop drain (see COORDINATION 2026-06-08). We must let the unplayed tail render into the mic before
+// Submit, or the last words are cropped — but we must NOT pay pacat's ~0.9s process-teardown tax to
+// learn when that's done. So we account for it directly: we know how many audio bytes we've handed to
+// pacat and how long it has been playing at real time, so the unplayed tail is just
+//   tail = audio_bytes/BYTES_PER_MS  −  elapsed_since_first_audio.
+// We wait that (+ a small margin), then Submit, and kill pacat in cleanup without awaiting its close.
+//   - STREAM_TAIL_MARGIN_MS   : safety margin over the computed tail (write/accounting jitter + the
+//                               ~18ms PulseAudio sink-input buffer).
+//   - STREAM_SUBMIT_SETTLE_MS : brief pause after the tail is rendered so dictation service's ASR finalizes it.
+//   - STREAM_DRAIN_MAX_MS     : hard cap on the wait, just a safety net.
+//   - STREAM_DRAIN_LEGACY=1   : fall back to the old await-pacat-close drain (kept while validating).
 const STREAM_DRAIN_MAX_MS = Number(process.env.STREAM_DRAIN_MAX_MS || 15000);
-const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 400);
+const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 250);
+const STREAM_TAIL_MARGIN_MS = Number(process.env.STREAM_TAIL_MARGIN_MS || 200);
+const STREAM_DRAIN_LEGACY = process.env.STREAM_DRAIN_LEGACY === '1';
+const BYTES_PER_MS = 48000 * 2 / 1000; // 96 — s16le, mono, 48 kHz
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function makeAbortError() { const e = new Error('client disconnected'); e.code = 'client_closed'; return e; }
 function throwIfAborted(signal) { if (signal && signal.aborted) throw makeAbortError(); }
@@ -259,7 +266,7 @@ async function startStream() {
     await startDictation(page);
     const pacat = spawnPacat();
     pacat.on('error', () => {});
-    return { page, pacat, t0: Date.now() };
+    return { page, pacat, t0: Date.now(), bytesWritten: 0, firstAudioAt: 0 };
   } catch (e) {
     recordResult(false, Date.now() - t0, `stream start failed: ${e.message}`);
     console.warn(`[wispr-dictate] stream start failed: ${e.stack || e.message}`);
@@ -267,25 +274,42 @@ async function startStream() {
     throw e;
   }
 }
-function pushAudio(s, buf) { try { if (s && s.pacat && s.pacat.stdin.writable) s.pacat.stdin.write(buf); } catch (_) {} }
+function pushAudio(s, buf) {
+  try {
+    if (s && s.pacat && s.pacat.stdin.writable) {
+      s.pacat.stdin.write(buf);
+      if (!s.firstAudioAt) s.firstAudioAt = Date.now();
+      s.bytesWritten = (s.bytesWritten || 0) + buf.length; // total audio handed to pacat (will be played)
+    }
+  } catch (_) {}
+}
 async function stopStream(s) {
   try {
     const drainStarted = Date.now();
-    // 1) EOF the pipe, then wait for pacat to finish *playing out* every buffered sample into the
-    //    mic. pacat does pa_stream_drain on EOF and only emits 'close' once PulseAudio has rendered
-    //    the whole backlog — so this waits exactly the amount the live stream is behind real time
-    //    (the cap is a safety net for a wedged pacat, not a fixed delay).
-    await new Promise(res => { try { s.pacat.stdin.end(res); } catch (_) { res(); } });
-    let drainedCleanly = false;
-    await Promise.race([
-      new Promise(res => s.pacat.once('close', () => { drainedCleanly = true; res(); })),
-      sleep(STREAM_DRAIN_MAX_MS)
-    ]);
-    // 2) Brief settle so dictation service's streaming recognizer finalizes the just-played tail before Submit.
+    let mode, tailMs = 0, waitMs = 0;
+    if (STREAM_DRAIN_LEGACY) {
+      // Fallback: EOF the pipe and wait for pacat's real drain-complete (process close). Correct, but
+      // carries pacat's ~0.9s teardown tax on every stop.
+      mode = 'legacy-close';
+      await new Promise(res => { try { s.pacat.stdin.end(res); } catch (_) { res(); } });
+      await Promise.race([ new Promise(res => s.pacat.once('close', res)), sleep(STREAM_DRAIN_MAX_MS) ]);
+    } else {
+      // Byte-accounting drain: the unplayed tail is everything we've written minus what has played at
+      // real time since the first audio byte. Wait that (+ margin), then Submit — no teardown wait.
+      mode = 'byte-accounting';
+      const wroteMs = (s.bytesWritten || 0) / BYTES_PER_MS;
+      const playedMs = s.firstAudioAt ? (Date.now() - s.firstAudioAt) : 0;
+      tailMs = Math.max(0, Math.round(wroteMs - playedMs));
+      waitMs = Math.min(STREAM_DRAIN_MAX_MS, tailMs + STREAM_TAIL_MARGIN_MS);
+      try { s.pacat.stdin.end(); } catch (_) {} // EOF so pacat finishes the tail; we don't await its close
+      await sleep(waitMs);
+      console.log(`[wispr-dictate] drain est wrote=${Math.round(wroteMs)}ms played=${playedMs}ms tail=${tailMs}ms wait=${waitMs}ms bytes=${s.bytesWritten || 0}`);
+    }
+    // Brief settle so dictation service's streaming recognizer finalizes the just-rendered tail before Submit.
     if (STREAM_SUBMIT_SETTLE_MS > 0) await sleep(STREAM_SUBMIT_SETTLE_MS);
     const drainMs = Date.now() - drainStarted;
     const text = await submitAndScrape(s.page);
-    console.log(`[wispr-dictate] stream stop drain=${drainMs}ms clean=${drainedCleanly} text=${text ? text.length : 0}`);
+    console.log(`[wispr-dictate] stream stop drain=${drainMs}ms mode=${mode} tail=${tailMs}ms text=${text ? text.length : 0}`);
     recordResult(!!(text && text.length), Date.now() - s.t0, text ? undefined : 'empty transcript');
     return { text, duration_ms: Date.now() - s.t0 };
   } catch (e) { recordResult(false, Date.now() - s.t0, e.message); throw e; }

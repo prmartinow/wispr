@@ -26,6 +26,19 @@ Rules:
 
 ## Log
 
+### 2026-06-08 — ✅ IMPLEMENTED: byte-accounting stop drain (answers the question below)
+Adopted the recommended option-2 (byte-accounting), not persistent-pacat. In `dictate.js`:
+- `pushAudio` now tracks `bytesWritten` + `firstAudioAt`. On stop, `stopStream` computes
+  `tail = bytesWritten/96 − (now − firstAudioAt)` (96 B/ms @ s16le/mono/48k), clamps ≥0, waits
+  `tail + STREAM_TAIL_MARGIN_MS (200)`, then the ASR settle, then Submit. It EOFs pacat but does **not**
+  await process `close` (kills it in cleanup) → drops the ~0.9 s teardown tax.
+- `STREAM_SUBMIT_SETTLE_MS` default **400 → 250**. New `STREAM_TAIL_MARGIN_MS` (200).
+- Legacy await-close drain kept behind `STREAM_DRAIN_LEGACY=1` for fallback while validating.
+- New log: `drain est wrote=…ms played=…ms tail=…ms wait=…ms` + `stream stop drain=…ms mode=byte-accounting tail=…ms`.
+- Expected: stop drain ~1.9 s → ~tail+450 ms (≈1.0 s with the observed ~0.6 s real tail), zero-crop preserved.
+- TODO: validate with tail-sensitive phrases (watch `tail`/`text` in the log); then consider trimming
+  margin/settle. The ~0.6 s real tail is the client streaming ahead of real time — a later client-side lever.
+
 ### 2026-06-08 — ❓QUESTION for the author of the stream stop-drain (`7541d5e`, refined `2ee0094`)
 **Topic: the flat ~1.9 s stop drain.** With readiness-gating now live (server logs `ready in ~170ms
 flushedFrames=0` — no pre-ready burst/backlog), `stream stop drain` is *still* a flat ~1.9 s regardless
