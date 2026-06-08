@@ -268,6 +268,36 @@ function validateWavFile(filePath) {
   return { durationMs, dataBytes, sampleRate: fmt.sampleRate };
 }
 
+// Transcode anything ffmpeg can decode (mp3/m4a/opus/flac/16k WAV/…) into the canonical playback
+// format (48 kHz / mono / s16le WAV) so internal callers aren't constrained to the mac client's format.
+function transcodeToCanonicalWav(src, dst) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error',
+      '-i', src, '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-f', 'wav', dst],
+      { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = ''; ff.stderr.on('data', d => (err += d));
+    const timer = setTimeout(() => { try { ff.kill('SIGKILL'); } catch (_) {} }, 120000);
+    ff.on('error', e => { clearTimeout(timer); reject(makeHttpError(400, 'invalid_audio', 'ffmpeg unavailable: ' + e.message)); });
+    ff.on('close', c => {
+      clearTimeout(timer);
+      if (c === 0) resolve();
+      else reject(makeHttpError(400, 'invalid_audio', 'could not decode audio: ' + err.trim().slice(0, 200)));
+    });
+  });
+}
+
+// Fast-path already-canonical WAV (the mac client); otherwise transcode + validate. → { path, audio }.
+async function normalizeAudioUpload(uploaded) {
+  try {
+    return { path: uploaded.filePath, audio: validateWavFile(uploaded.filePath) };
+  } catch (e) {
+    if (e.status === 413) throw e; // too large/long — don't bother transcoding
+    const dst = uploaded.filePath + '.48k.wav';
+    await transcodeToCanonicalWav(uploaded.filePath, dst);
+    return { path: dst, audio: validateWavFile(dst) };
+  }
+}
+
 // --- routing ----------------------------------------------------------------
 async function handleRequest(req, res) {
   let uploaded = null;
@@ -293,7 +323,7 @@ async function handleRequest(req, res) {
       if (!/^multipart\/form-data/i.test(ct)) return sendErr(res, 415, 'unsupported_media_type', 'expected multipart/form-data');
 
       uploaded = await receiveAudioFile(req);
-      const audio = validateWavFile(uploaded.filePath);
+      const { path: audioPath, audio } = await normalizeAudioUpload(uploaded);
       const t0 = Date.now();
       const ac = new AbortController();
       const abortTranscription = () => {
@@ -303,7 +333,7 @@ async function handleRequest(req, res) {
       res.on('close', abortTranscription);
       let text;
       try {
-        text = await dictate.transcribeFile(uploaded.filePath, audio, { signal: ac.signal });
+        text = await dictate.transcribeFile(audioPath, audio, { signal: ac.signal });
       } catch (e) {
         if (ac.signal.aborted || res.destroyed || res.writableEnded) return;
         return sendErr(res, statusForError(e), e.code || 'backend_unavailable', String(e.message || e));
