@@ -26,6 +26,59 @@ Rules:
 
 ## Log
 
+### 2026-06-08 — ✅ SHIPPED: concurrent internal transcription via a lane pool (WORKING; mTLS done)
+Made /transcribe a **concurrent service** so internal RPC services transcribe in parallel without
+blocking — or cross-talking with — the live dictation frontend. PROVEN: **7 concurrent transcriptions
+finished in 20 s** (serial ≈ 7×), each lane returned its OWN clip's text, zero cross-talk.
+
+**Architecture (built + deployed + running on RPC):**
+- **Lane 0** = existing browser/virtmic = the live **streaming** frontend (untouched, reserved).
+- **Lanes 1..7** = internal **batch** pool. Each lane = own Chromium instance (CDP 9223+k) +
+  own virtual mic `virtmic{k}` via `PULSE_SOURCE=virtmic{k}_in` (the isolation mechanism — verified;
+  per-window `deviceId` pinning does NOT work because `--use-fake-ui-for-media-stream` forces the
+  default mic) + own logged-in profile clone + tiled 470×530 window on :95 (no WM, 4×2 grid).
+- `dictate.js`: `transcribeFile` (batch) fans out across free lanes (`acquireLane`/`batchBusy`→409);
+  `startStream` (streaming) stays on lane 0. `WISPR_LANES=0` ⇒ legacy single-backend behavior.
+- `/transcribe` now **accepts any audio format** (server-side `ffmpeg` → 48k/mono WAV); was 48k-only.
+- Files: `deploy/{lanes.env,wispr-lane.sh,wispr-lane@.service,setup-lanes.sh,setup-internal-mtls.sh}`,
+  `setup-virtmic.sh` (creates virtmic{1..N}), `install.sh` (provisions+enables), `wispr-server.service`
+  (EnvironmentFile=lanes.env, LAN_TLS_CA=client-ca-bundle.crt). `lanes.env` `WISPR_LANES=7` = source of truth.
+
+**Internal auth = mTLS (Pierre's choice), DONE & TESTED:** `setup-internal-mtls.sh` mints a SEPARATE
+internal CA + client cert, bundles it with the existing client CA (`client-ca-bundle.crt`) and pins the
+fingerprint (appended — mac client's fingerprint preserved; now 2 pinned). The CA private key is NOT on
+the RPC, so we couldn't sign off the original CA — hence a dedicated internal CA. **Internal callers:**
+```
+curl --cacert ~/.wispr/mtls/ca.crt \
+     --cert ~/.wispr/mtls/wispr-internal-client.crt \
+     --key  ~/.wispr/mtls/wispr-internal-client.key \
+     -X POST https://wispr.local:8443/transcribe -H "Authorization: Bearer <TOKEN>" -F audio=@file.wav
+```
+⚠️ Use host **wispr.local** (or `rpc`), NOT 127.0.0.1 — the server cert SAN is `IP:wispr.local, DNS:rpc`
+(do NOT regenerate the server cert: the mac client pins it). Verified: WITH cert → transcript; NO cert → refused.
+
+**Lane health:** lanes 0–7 all logged in & OK after the 7-way concurrent run (no dictation service logout/rate
+pushback observed).
+
+**FRONTEND REGRESSION → FIXED (other agent):** restarting `wispr-virtmic` to add the 7 lane mics
+reloaded the PulseAudio modules, but already-running Chromium instances (incl. **lane 0 / the frontend**)
+had cached their device list at startup and didn't re-enumerate → lane 0 lost its mic → "Submit
+dictation" never engaged (the 8s timeout) → **Pierre couldn't dictate**. Fix (now live on RPC, verified
+`startDictation=true`): `wispr-browser.service` gets `Environment=PULSE_SOURCE=virtmic_in` (pin the
+frontend mic explicitly instead of relying on default-source, which became ambiguous once 7 more mics
+existed) + `PartOf=wispr-virtmic.service` (restart+re-enumerate when mics rebuild) + tiled into cell 0
+(`--window-position=0,0 --window-size=470,530`). `wispr-lane@.service` also gets `PartOf=`. install.sh
+restarts the server after lanes. **Lesson: never `restart wispr-virtmic` without restarting the browsers.**
+
+**OPEN / TODO (next session):**
+1. **Disk**: lane profile clones are still **1.2 GB each** (~8.4 GB; disk 91% used, 22 GB free). The
+   `--delete-excluded` fix + `Default/Extensions` exclude are committed but NOT yet re-applied to the
+   running clones (re-provision = `systemctl --user stop wispr-lane@{1..7}` → `deploy/setup-lanes.sh`
+   → restart). Should drop to ~tens of MB each.
+2. **Re-verify the live frontend** (mac streaming dictation) end-to-end after all the restarts.
+3. Optionally trim margin/settle on the stop-drain; doc the internal API in `contract/`.
+4. `install.sh` codifies the full target state but was NOT run wholesale; bring-up was staged manually.
+
 ### 2026-06-08 — ✅ IMPLEMENTED: byte-accounting stop drain (answers the question below)
 Adopted the recommended option-2 (byte-accounting), not persistent-pacat. In `dictate.js`:
 - `pushAudio` now tracks `bytesWritten` + `firstAudioAt`. On stop, `stopStream` computes

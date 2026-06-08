@@ -40,13 +40,14 @@ systemctl --user enable --now vnc-xvfb.service vnc-x11vnc.service vnc-novnc.serv
 systemctl --user enable --now wispr-virtmic.service wispr-browser.service wispr-server.service
 systemctl --user enable --now wispr-virtmic-check.timer wispr-browser-restart.timer
 
-# Internal batch lanes: re-run the (idempotent) virtmic setup so the per-lane mics exist, clone the
-# logged-in profile per lane, then bring up one tiled, mic-isolated Chromium per lane. Count = WISPR_LANES.
+# Internal batch lanes: re-run the (idempotent) virtmic setup so the per-lane mics exist. Browser
+# units are PartOf=wispr-virtmic.service so they restart after a mic rebuild and re-enumerate devices.
 systemctl --user restart wispr-virtmic.service
 "$HERE/setup-lanes.sh"
 for k in $(seq 1 "${WISPR_LANES:-0}"); do
   systemctl --user enable --now "wispr-lane@$k.service"
 done
+systemctl --user restart wispr-server.service
 
 echo "installed. units:"
 systemctl --user is-active wispr-virtmic.service wispr-browser.service wispr-server.service

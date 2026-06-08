@@ -2,6 +2,7 @@
 Description=wispr internal transcription lane %i (Chromium on :95, CDP 9223+%i, mic virtmic%i)
 After=vnc-xvfb.service wispr-virtmic.service
 Wants=vnc-xvfb.service wispr-virtmic.service
+PartOf=wispr-virtmic.service
 
 [Service]
 Type=simple
