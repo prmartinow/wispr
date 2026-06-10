@@ -27,7 +27,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>wispr records your voice so it can be transcribed by your dictation server.</string>
 </dict>

@@ -1,13 +1,13 @@
 # client-macos
 
-SwiftUI/AppKit menu-bar dictation client. Records mic audio → `POST /transcribe` on the
+SwiftUI/AppKit menu-bar + Dock dictation client. Records mic audio → `POST /transcribe` on the
 home server → pastes the returned text into the focused app. Builds against
 [`../contract/transcribe.md`](../contract/transcribe.md).
 
 ## Build & run
 ```sh
 cd client-macos
-./scripts/package_app.sh        # -> wispr.app (Info.plist for mic TCC + ad-hoc sign)
+./scripts/package_app.sh        # -> wispr.app (Info.plist, app icon, stable local signing)
 open ./wispr.app              # configure server/token in Settings (gear), or seed via env:
 # WISPR_SERVER_URL=https://wispr.local:8443 \
 # WISPR_TOKEN="$(ssh -p 2224 user@wispr.local 'sed -n s/^WISPR_BEARER_TOKEN=//p ~/dev/wispr/server/.env')" \
@@ -20,8 +20,10 @@ mTLS files are stored under `~/Library/Application Support/wispr` with private p
 ## GUI
 - **Floating HUD pill** (bottom-center, always-on-top, non-activating so it never steals focus):
   live **waveform** while recording → **"transcribing…"** during the wait → brief **"inserted"** / error.
-- **Menu-bar state machine**: `mic` idle → `mic.fill` (red) recording → `waveform` (yellow)
+- **Menu-bar state machine**: `waveform` idle → `mic.fill` (red) recording → `waveform` (yellow)
   transcribing → green check / orange error.
+- **Dock icon**: wispr is Dock-visible and can be pinned; clicking it reopens Settings when no
+  wispr window is visible.
 - **Settings** window: server URL, bearer token, **activation mode**, global **shortcut** (click to
   record a new combo), **microphone** picker, and a **Test connection** button (`/healthz`).
 - **History** window: recent transcripts (persisted), **Copy** or **Paste** (re-insert into the last app).
