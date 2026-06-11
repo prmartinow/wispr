@@ -1,0 +1,14 @@
+{
+  "name": "wispr-server",
+  "private": true,
+  "version": "0.1.0",
+  "description": "LAN transcription service — POST /transcribe. Backend: dictation service web dictation (stub for now).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "ws": "^8.21.0"
+  }
+}

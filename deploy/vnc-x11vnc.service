@@ -1,0 +1,14 @@
+[Unit]
+Description=Persistent authenticated x11vnc bridge (localhost only)
+Requires=vnc-xvfb.service
+After=vnc-xvfb.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -lc 'for i in $(seq 1 80); do /usr/bin/xdpyinfo -display :95 >/dev/null 2>&1 && exit 0; sleep 0.1; done; exit 1'
+ExecStart=/usr/bin/x11vnc -display :95 -forever -shared -rfbport 5903 -localhost -no6 -rfbauth ~/dev/vnc/auth/x11vnc.pass -o ~/dev/vnc/logs/x11vnc.log
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

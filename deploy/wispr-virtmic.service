@@ -1,0 +1,11 @@
+[Unit]
+Description=wispr virtual mic (PulseAudio daemon + null-sink/remap source)
+# wispr owns the pulse daemon here; system pulseaudio.service/socket are disabled.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=~/dev/wispr/deploy/setup-virtmic.sh
+
+[Install]
+WantedBy=default.target

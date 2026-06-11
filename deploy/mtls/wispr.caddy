@@ -1,0 +1,9 @@
+wispr.p12w.xyz {
+	tls {
+		client_auth {
+			mode require_and_verify
+			trusted_ca_cert_file /etc/caddy/wispr-clients-ca.crt
+		}
+	}
+	reverse_proxy http://wispr.local:8090
+}

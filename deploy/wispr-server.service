@@ -1,0 +1,34 @@
+[Unit]
+Description=wispr transcription server (POST /transcribe + WS /v1/stream on :8090)
+After=wispr-browser.service wispr-virtmic.service network.target
+Wants=wispr-browser.service wispr-virtmic.service
+
+[Service]
+Type=simple
+WorkingDirectory=~/dev/wispr/server
+Environment=PORT=8090
+Environment=HOST=0.0.0.0
+Environment=LAN_TLS_PORT=8443
+Environment=LAN_TLS_HOST=0.0.0.0
+Environment=LAN_TLS_KEY=~/.wispr/mtls/rpc-server.key
+Environment=LAN_TLS_CERT=~/.wispr/mtls/rpc-server.crt
+Environment=LAN_TLS_CA=~/.wispr/mtls/client-ca-bundle.crt
+# WISPR_LANES (internal batch concurrency) lives here so the server, virtmic setup, and lane units
+# all share one source of truth. "-" = tolerate the file being absent.
+EnvironmentFile=-~/dev/wispr/deploy/lanes.env
+Environment=REQUIRE_LAN_MTLS=1
+ExecStart=/usr/bin/node ~/dev/wispr/server/server.js
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/run/user/1000
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=wispr dictation service browser (dictation service-only Chromium on :95, CDP :9223)
+After=vnc-xvfb.service wispr-virtmic.service
+Wants=vnc-xvfb.service wispr-virtmic.service
+PartOf=wispr-virtmic.service
+
+[Service]
+Type=simple
+Environment=DISPLAY=:95
+Environment=PULSE_SOURCE=virtmic_in
+# XDG_RUNTIME_DIR (/run/user/1000) is provided by the user manager -> finds the PulseAudio virtual mic.
+ExecStartPre=~/dev/wispr/deploy/prepare-chrome-sandbox.sh
+ExecStart=~/dev/wispr/deploy/wispr-browser.sh
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target
