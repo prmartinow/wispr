@@ -8,9 +8,9 @@ PartOf=wispr-virtmic.service
 Type=simple
 Environment=DISPLAY=:95
 Environment=PULSE_SOURCE=virtmic_in
-Environment=CHROME_DEVEL_SANDBOX=/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-linux64/chrome_sandbox
 # XDG_RUNTIME_DIR (/run/user/1000) is provided by the user manager -> finds the PulseAudio virtual mic.
-ExecStart=/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-linux64/chrome --user-data-dir=~/.wispr/profiles/service --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --no-first-run --no-default-browser-check --disable-dev-shm-usage --use-fake-ui-for-media-stream --window-position=0,0 --window-size=470,530 about:blank
+ExecStartPre=~/dev/wispr/deploy/prepare-chrome-sandbox.sh
+ExecStart=~/dev/wispr/deploy/wispr-browser.sh
 Restart=always
 RestartSec=5
 UMask=0077

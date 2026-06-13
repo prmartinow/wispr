@@ -6,6 +6,7 @@ PartOf=wispr-virtmic.service
 
 [Service]
 Type=simple
+ExecStartPre=~/dev/wispr/deploy/prepare-chrome-sandbox.sh
 ExecStart=~/dev/wispr/deploy/wispr-lane.sh %i
 Restart=always
 RestartSec=5

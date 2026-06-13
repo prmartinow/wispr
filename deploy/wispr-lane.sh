@@ -9,12 +9,15 @@
 # Called by wispr-lane@%i.service.
 set -uo pipefail
 k="${1:?usage: wispr-lane.sh <lane-index>}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/chrome-paths.sh"
+configure_wispr_chrome_env
+
 export DISPLAY="${DISPLAY:-:95}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export PULSE_SOURCE="virtmic${k}_in"
 
-CHROME=/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-linux64/chrome
-export CHROME_DEVEL_SANDBOX=/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-linux64/chrome_sandbox
 PROFILE="~/.wispr/profiles/lanes/${k}-profile"
 PORT=$(( 9223 + k ))
 

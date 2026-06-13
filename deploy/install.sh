@@ -4,19 +4,15 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$HOME/.config/systemd/user"
-chmod +x "$HERE/setup-virtmic.sh" "$HERE/setup-lanes.sh" "$HERE/wispr-lane.sh" "$HERE/setup-internal-mtls.sh"
+chmod +x "$HERE/setup-virtmic.sh" "$HERE/setup-lanes.sh" "$HERE/wispr-lane.sh" \
+         "$HERE/wispr-browser.sh" "$HERE/chrome-paths.sh" "$HERE/prepare-chrome-sandbox.sh" \
+         "$HERE/setup-internal-mtls.sh"
 # shellcheck disable=SC1091
 source "$HERE/lanes.env"
+# shellcheck disable=SC1091
+source "$HERE/chrome-paths.sh"
 
-CHROME_SANDBOX="/mnt/data/takeout-browser-profile/ms-playwright/chromium-1217/chrome-linux64/chrome_sandbox"
-if [ -e "$CHROME_SANDBOX" ]; then
-  if sudo -n true 2>/dev/null; then
-    sudo chown root:root "$CHROME_SANDBOX"
-    sudo chmod 4755 "$CHROME_SANDBOX"
-  else
-    echo "warn: cannot configure Chromium setuid sandbox (sudo unavailable): $CHROME_SANDBOX" >&2
-  fi
-fi
+"$HERE/prepare-chrome-sandbox.sh" || echo "warn: Chromium setuid sandbox is not ready; browser service may fail" >&2
 
 cp "$HERE/wispr-virtmic.service" "$HERE/wispr-browser.service" "$HERE/wispr-server.service" \
    "$HERE/wispr-lane@.service" \
