@@ -109,8 +109,8 @@ final class HealthMonitor {
         if browser != "up" { return .backendDown }
         if dictationService == "logged_out" { return .loggedOut }
         if dictationService == "loading" || dictationService == "no-tab" { return .loading }
-        if internet == "down" { return .serverOffline }
         if dictationService == "ready" { return .up }
+        if internet == "down" { return .serverOffline }
         return .backendDown
     }
 

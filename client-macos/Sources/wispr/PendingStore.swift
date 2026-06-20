@@ -53,6 +53,23 @@ final class PendingStore: ObservableObject {
         save()
     }
 
+    func discardNoSpeech(_ item: PendingItem) -> URL? {
+        let discardDir = dir.deletingLastPathComponent().appendingPathComponent("discarded-no-speech", isDirectory: true)
+        PrivateFiles.ensureDirectory(discardDir)
+        let src = dir.appendingPathComponent(item.file)
+        let dst = discardDir.appendingPathComponent(item.file)
+        do {
+            try? FileManager.default.removeItem(at: dst)
+            try FileManager.default.moveItem(at: src, to: dst)
+            items.removeAll { $0.id == item.id }
+            save()
+            PrivateFiles.lockDownIfPresent(dst)
+            return dst
+        } catch {
+            return nil
+        }
+    }
+
     private func load() {
         if let d = try? Data(contentsOf: indexURL), let arr = try? JSONDecoder().decode([PendingItem].self, from: d) {
             items = arr

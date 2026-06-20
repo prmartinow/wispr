@@ -35,6 +35,11 @@ enum WisprError: Error {
         }
     }
 
+    var isNoSpeech: Bool {
+        if case .noSpeech = self { return true }
+        return false
+    }
+
     static func from(_ error: Error) -> WisprError {
         if let w = error as? WisprError { return w }
 

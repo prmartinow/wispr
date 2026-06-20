@@ -448,6 +448,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             self.appState.pendingCount = self.pending.count
                             self.refreshMenu()
                             Log.log("transcribe: kept safety copy for retry (pending=\(self.pending.count)) — \(werr.userMessage)")
+                        } else if werr.isNoSpeech {
+                            let discarded = self.pending.discardNoSpeech(safetyItem)
+                            self.appState.pendingCount = self.pending.count
+                            self.refreshMenu()
+                            Log.log("transcribe: preserved no-speech safety copy outside retry (pending=\(self.pending.count)) — \(discarded?.path ?? "discard failed")")
                         } else {
                             self.pending.remove(safetyItem)
                             self.appState.pendingCount = self.pending.count
@@ -459,6 +464,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.appState.pendingCount = self.pending.count
                         self.refreshMenu()
                         Log.log("buffered take for retry (pending=\(self.pending.count)) — \(werr.userMessage)")
+                    } else if werr.isNoSpeech, pcm.count >= 16_000 {
+                        let item = self.pending.add(wav: WAV.fromPCM(pcm), reason: werr.userMessage)
+                        let discarded = self.pending.discardNoSpeech(item)
+                        self.appState.pendingCount = self.pending.count
+                        self.refreshMenu()
+                        Log.log("transcribe: preserved short no-speech take outside retry (pending=\(self.pending.count)) — \(discarded?.path ?? "discard failed")")
                     }
                     self.appState.phase = .error(werr.userMessage)
                     self.scheduleIdle(after: 3)

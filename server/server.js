@@ -53,6 +53,13 @@ const DEVTOOLS = 'http://127.0.0.1:9223/json/version'; // the dedicated dictatio
 
 const MAX_AUDIO_SECONDS = numCfg('MAX_AUDIO_SECONDS', 600);
 const BATCH_UPLOAD_MAX_BYTES = numCfg('BATCH_UPLOAD_MAX_BYTES', 64 * 1024 * 1024);
+const INTERNET_PROBE_URLS = cfg('INTERNET_PROBE_URLS', 'https://www.google.com/generate_204,https://cloudflare.com/cdn-cgi/trace')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+const INTERNET_PROBE_TIMEOUT_MS = numCfg('INTERNET_PROBE_TIMEOUT_MS', 2500);
+const INTERNET_FAILURE_THRESHOLD = numCfg('INTERNET_FAILURE_THRESHOLD', 3);
+const INTERNET_RECENT_OK_MS = numCfg('INTERNET_RECENT_OK_MS', 120000);
 
 if (!TOKEN) {
   console.error('[wispr-server] refusing to start: no WISPR_BEARER_TOKEN (server/.env)');
@@ -127,12 +134,30 @@ function micOk() {
   });
 }
 async function internetOk() {
-  try {
-    const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 3000);
-    const r = await fetch('https://www.google.com/generate_204', { signal: ac.signal });
-    clearTimeout(t); return r.status < 400;
-  } catch (_) { return false; }
+  const probe = async (url) => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), INTERNET_PROBE_TIMEOUT_MS);
+    try {
+      const r = await fetch(url, { signal: ac.signal });
+      return r.status < 400;
+    } catch (_) {
+      return false;
+    } finally {
+      clearTimeout(t);
+    }
+  };
+  const ok = (await Promise.all(INTERNET_PROBE_URLS.map(probe))).some(Boolean);
+  if (ok) {
+    internetOk.failures = 0;
+    internetOk.lastOk = Date.now();
+    return true;
+  }
+  internetOk.failures = (internetOk.failures || 0) + 1;
+  const recentSuccess = internetOk.lastOk && Date.now() - internetOk.lastOk < INTERNET_RECENT_OK_MS;
+  return internetOk.failures < INTERNET_FAILURE_THRESHOLD || recentSuccess;
 }
+internetOk.failures = 0;
+internetOk.lastOk = 0;
 // browser/dictationService come from a read-only probe; skipped while a transcription is in flight (don't disturb it).
 async function refreshHealth() {
   const busy = dictate.isBusy();
