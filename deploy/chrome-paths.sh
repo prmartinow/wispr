@@ -3,7 +3,7 @@
 # over time (chromium-1217, chromium-1223, ...), so services must not pin one version.
 
 resolve_wispr_chrome() {
-  local candidate root
+  local candidate root roots
 
   if [ -n "${WISPR_CHROME:-}" ] && [ -x "$WISPR_CHROME" ]; then
     printf '%s\n' "$WISPR_CHROME"
@@ -16,7 +16,9 @@ resolve_wispr_chrome() {
       return 0
     fi
   done < <(
-    for root in ${WISPR_PLAYWRIGHT_BROWSERS_ROOTS:-"$HOME/.cache/ms-playwright"}; do
+    roots="${WISPR_PLAYWRIGHT_BROWSERS_ROOTS:-"$HOME/.cache/ms-playwright"}"
+    roots="${roots//:/ }"
+    for root in $roots; do
       [ -d "$root" ] && find "$root" -type f -path '*/chromium-*/chrome-linux*/chrome' 2>/dev/null
     done | sort -Vr
   )
