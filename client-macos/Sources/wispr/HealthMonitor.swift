@@ -41,7 +41,7 @@ final class HealthMonitor {
     init(settings: Settings) { self.settings = settings }
 
     func start() {
-        check()
+        Timer.scheduledTimer(withTimeInterval: 18, repeats: false) { [weak self] _ in self?.check() }
         let t = Timer(timeInterval: 20, repeats: true) { [weak self] _ in self?.check() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -54,7 +54,7 @@ final class HealthMonitor {
         var req = URLRequest(url: url)
         req.timeoutInterval = 6
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
-        Net.session.dataTask(with: req) { [weak self] data, resp, error in
+        Net.dataTask(with: req) { [weak self] data, resp, error in
             guard let self else { return }
             let new = Self.classify(status: (resp as? HTTPURLResponse)?.statusCode, data: data)
             if new == .unreachable, let error {
@@ -78,7 +78,7 @@ final class HealthMonitor {
         let status: ServerStatus
         let summary: String
         do {
-            let (data, resp) = try await Net.session.data(for: req)
+            let (data, resp) = try await Net.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode
             status = Self.classify(status: code, data: data)
             summary = Self.summary(status: code, data: data, error: nil)

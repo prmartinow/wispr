@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         health.start()
 
         endpoints.onChange = { [weak self] _ in self?.health.check() } // re-check health on switch
+        endpoints.onReachable = { [weak self] _ in self?.health.check() } // first green probe may keep same URL
         endpoints.start()
 
         // Recover immediately when the network changes (Wi-Fi ↔ Ethernet) instead of waiting for the poll.

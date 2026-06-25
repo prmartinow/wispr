@@ -7,11 +7,16 @@ final class EndpointSelector {
     private let settings: Settings
     private var timer: Timer?
     var onChange: ((URL) -> Void)?
+    var onReachable: ((URL) -> Void)?
 
     init(settings: Settings) { self.settings = settings }
 
     func start() {
-        select()
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+            Task { [weak self] in
+                _ = await self?.selectNow(timeout: 12, reason: "startup", log: false)
+            }
+        }
         let t = Timer(timeInterval: 30, repeats: true) { [weak self] _ in self?.select() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -32,14 +37,17 @@ final class EndpointSelector {
         if preferCurrent,
            active != lan,
            await Self.reachable(active, token: token, timeout: timeout, reason: reason, log: log) {
+            await notifyReachable(active)
             return active
         }
         if await Self.reachable(lan, token: token, timeout: timeout, reason: reason, log: log) {
             await setActive(lan)
+            await notifyReachable(lan)
             return lan
         }
         if let remote, await Self.reachable(remote, token: token, timeout: timeout, reason: reason, log: log) {
             await setActive(remote)
+            await notifyReachable(remote)
             return remote
         }
         await setActive(lan) // neither reachable → keep LAN; callers can surface the failure
@@ -53,6 +61,10 @@ final class EndpointSelector {
         onChange?(url)
     }
 
+    @MainActor private func notifyReachable(_ url: URL) {
+        onReachable?(url)
+    }
+
     static func reachable(_ base: URL, token: String, timeout: TimeInterval = 6, reason: String = "select", log: Bool = false) async -> Bool {
         guard EndpointPolicy.allowed(base), !token.isEmpty else { return false }
         let t0 = Date()
@@ -60,7 +72,7 @@ final class EndpointSelector {
         req.timeoutInterval = timeout
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
-            let (_, resp) = try await Net.session.data(for: req)
+            let (_, resp) = try await Net.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             let ok = code == 200
             if log {

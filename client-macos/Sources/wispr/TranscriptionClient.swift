@@ -15,7 +15,6 @@ struct ServerError: Decodable {
 
 final class TranscriptionClient {
     private let settings: Settings
-    private var session: URLSession { Net.session } // shared session (handles mTLS on remote)
 
     init(settings: Settings) {
         self.settings = settings
@@ -45,7 +44,7 @@ final class TranscriptionClient {
         body.appendString("\r\n")
         body.appendString("--\(boundary)--\r\n")
 
-        let (data, resp) = try await session.upload(for: req, from: body)
+        let (data, resp) = try await Net.upload(for: req, from: body)
         guard let http = resp as? HTTPURLResponse else { throw ClientError.badResponse }
         guard (200..<300).contains(http.statusCode) else {
             if let err = try? JSONDecoder().decode(ServerError.self, from: data) {
@@ -64,7 +63,7 @@ final class TranscriptionClient {
         req.timeoutInterval = 6
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
         do {
-            let (data, resp) = try await session.data(for: req)
+            let (data, resp) = try await Net.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             let body = String(data: data, encoding: .utf8) ?? ""
             return code == 200 ? "OK — \(body)" : "HTTP \(code)"

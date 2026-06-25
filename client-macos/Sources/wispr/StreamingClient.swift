@@ -31,7 +31,7 @@ final class StreamingClient {
     }
 
     private let settings: Settings
-    private var session: URLSession { Net.session }
+    private let session = Net.makeSession()
     private var task: URLSessionWebSocketTask?
 
     // Final/error may arrive before finish() is awaited (e.g. an early `busy`); stash it.
@@ -149,6 +149,7 @@ final class StreamingClient {
     func cancel() {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        session.finishTasksAndInvalidate()
         settleReady(.failure(StreamError.cancelled))
     }
 
@@ -238,7 +239,8 @@ final class StreamingClient {
            streamErr.isSemantic {
             onEarlyServerError?(streamErr)
         }
-        if case .success = result { task = nil }
+        task = nil
+        session.finishTasksAndInvalidate()
     }
 
     private func resume(with result: Result<String, Error>, cont: CheckedContinuation<String, Error>) {

@@ -542,6 +542,9 @@ httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
 const lanTlsOptions = loadLanTlsOptions();
 if (lanTlsOptions) {
   const httpsServer = https.createServer(lanTlsOptions, handleRequest);
+  httpsServer.on('tlsClientError', (err, socket) => {
+    console.warn(`[wispr-server] LAN TLS client error remote=${socket.remoteAddress || '?'} code=${err.code || '?'} message=${err.message || err}`);
+  });
   attachUpgrade(httpsServer);
   httpsServer.listen(HTTPS_PORT, HTTPS_HOST, () => {
     console.log(`[wispr-server] engine=${ENGINE} LAN mTLS listening on ${HTTPS_HOST}:${HTTPS_PORT}`);

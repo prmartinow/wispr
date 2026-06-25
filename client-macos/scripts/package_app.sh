@@ -29,6 +29,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>wispr records your voice so it can be transcribed by your dictation server.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>wispr connects to your local dictation server on your private network.</string>
 </dict>
 </plist>
 PLIST
