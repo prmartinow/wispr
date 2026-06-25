@@ -57,7 +57,7 @@ final class StreamingClient {
         self.settings = settings
     }
 
-    /// Open the socket, send `{start}`, and wait until the server has clicked dictation service's dictation
+    /// Open the socket, send `{start}`, and wait until the server has clicked the dictation
     /// button and is ready to receive audio. The Mac mic is only started after this returns.
     func prepare(timeout: TimeInterval = 12) async throws {
         try open()

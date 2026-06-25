@@ -3,7 +3,7 @@ import Foundation
 /// Server readiness, derived from the deep `/healthz` (browser / dictationService / mic / internet).
 enum ServerStatus: Equatable {
     case unknown
-    case up            // dictationService ready — safe to dictate
+    case up            // dictation service ready — safe to dictate
     case loading       // browser up but dictation service still warming up
     case loggedOut     // dictation service logged out — needs a human to log in
     case backendDown   // Chromium/mic not available
@@ -16,7 +16,7 @@ enum ServerStatus: Equatable {
         case .unknown:       return "checking…"
         case .up:            return "online"
         case .loading:       return "warming up…"
-        case .loggedOut:     return "dictation service logged out"
+        case .loggedOut:     return "Dictation service logged out"
         case .backendDown:   return "backend down"
         case .serverOffline: return "server has no internet"
         case .unauthorized:  return "unauthorized"

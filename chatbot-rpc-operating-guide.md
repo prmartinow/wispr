@@ -101,11 +101,11 @@ Interactive commands:
 
 1. Parse CLI args and default to `http://127.0.0.1:9222`.
 2. Attach to the existing Chromium browser with `chromium.connectOverCDP`.
-3. Reuse the first open `DICTATION_SERVICE_URL/` tab, or open dictation service if none exists.
+3. Reuse the first open `${DICTATION_SERVICE_URL}/` tab, or open dictation service if none exists.
 4. Derive the transcript path from the dictation service URL:
 
    ```text
-   DICTATION_SERVICE_URL/c/<session-id>
+   ${DICTATION_SERVICE_URL}/c/<session-id>
    -> ~/dev/chatbot-cli/outputs/<session-id>.txt
    ```
 
@@ -200,7 +200,7 @@ const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 (async () => {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:9222', { timeout: 10000 });
   const ctx = browser.contexts()[0];
-  const page = ctx.pages().find(p => p.url().startsWith('DICTATION_SERVICE_URL/'));
+  const page = ctx.pages().find(p => p.url().startsWith('${DICTATION_SERVICE_URL}/'));
   if (!page) throw new Error('No dictation service page found');
 
   const state = await page.evaluate(() => {
@@ -263,7 +263,7 @@ DISPLAY=:95 setsid ~/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome \
   --disable-dev-shm-usage \
   --window-size=1400,1000 \
   --no-sandbox \
-  DICTATION_SERVICE_URL/ \
+  ${DICTATION_SERVICE_URL}/ \
   > ~/takeout-browser/logs/chrome.log 2>&1 < /dev/null &
 ```
 
@@ -306,7 +306,7 @@ On 2026-05-30, the RPC test path was verified:
 Prompt: Reply with exactly: rpc chatbot test ok
 Response: rpc chatbot test ok
 Transcript: ~/dev/chatbot-cli/outputs/6a1a3995-2d40-8323-8741-d24b031e041c.txt
-dictation service URL: DICTATION_SERVICE_URL/c/6a1a3995-2d40-8323-8741-d24b031e041c
+dictation service URL: ${DICTATION_SERVICE_URL}/c/6a1a3995-2d40-8323-8741-d24b031e041c
 ```
 
 Direct DevTools readback confirmed:

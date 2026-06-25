@@ -26,14 +26,14 @@ DISPLAY=:95 setsid ~/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome \
   --disable-dev-shm-usage \
   --window-size=1400,1000 \
   --no-sandbox \
-  DICTATION_SERVICE_URL/c/6a1a3995-2d40-8323-8741-d24b031e041c \
+  ${DICTATION_SERVICE_URL}/c/6a1a3995-2d40-8323-8741-d24b031e041c \
   > ~/takeout-browser/logs/chrome.log 2>&1 < /dev/null &
 ```
 
 Current dictation service tab:
 
 ```text
-DICTATION_SERVICE_URL/c/6a1a3995-2d40-8323-8741-d24b031e041c
+${DICTATION_SERVICE_URL}/c/6a1a3995-2d40-8323-8741-d24b031e041c
 ```
 
 Current media result in normal launch:
@@ -134,7 +134,7 @@ DISPLAY=:95 setsid ~/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome \
   --no-sandbox \
   --use-fake-device-for-media-stream \
   --use-fake-ui-for-media-stream \
-  DICTATION_SERVICE_URL/c/6a1a3995-2d40-8323-8741-d24b031e041c \
+  ${DICTATION_SERVICE_URL}/c/6a1a3995-2d40-8323-8741-d24b031e041c \
   > ~/takeout-browser/logs/chrome.log 2>&1 < /dev/null &
 ```
 
@@ -254,7 +254,7 @@ DISPLAY=:95 setsid ~/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome \
   --use-fake-device-for-media-stream \
   --use-fake-ui-for-media-stream \
   --use-file-for-fake-audio-capture=~/takeout-browser/audio-tests/rpc-dictation-test.wav \
-  DICTATION_SERVICE_URL/c/6a1a3995-2d40-8323-8741-d24b031e041c \
+  ${DICTATION_SERVICE_URL}/c/6a1a3995-2d40-8323-8741-d24b031e041c \
   > ~/takeout-browser/logs/chrome.log 2>&1 < /dev/null &
 ```
 
@@ -265,7 +265,7 @@ cd ~/takeout-browser && node - <<'JS'
 const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 (async () => {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-  const page = browser.contexts()[0].pages().find(p => p.url().startsWith('DICTATION_SERVICE_URL/'));
+  const page = browser.contexts()[0].pages().find(p => p.url().startsWith('${DICTATION_SERVICE_URL}/'));
   const state = await page.evaluate(async () => {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const gum = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -296,7 +296,7 @@ const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 
 (async () => {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-  const page = browser.contexts()[0].pages().find(p => p.url().startsWith('DICTATION_SERVICE_URL/'));
+  const page = browser.contexts()[0].pages().find(p => p.url().startsWith('${DICTATION_SERVICE_URL}/'));
   if (!page) throw new Error('No dictation service page found');
 
   await page.bringToFront();
@@ -349,7 +349,7 @@ DISPLAY=:95 setsid ~/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome \
   --disable-dev-shm-usage \
   --window-size=1400,1000 \
   --no-sandbox \
-  DICTATION_SERVICE_URL/c/6a1a3995-2d40-8323-8741-d24b031e041c \
+  ${DICTATION_SERVICE_URL}/c/6a1a3995-2d40-8323-8741-d24b031e041c \
   > ~/takeout-browser/logs/chrome.log 2>&1 < /dev/null &
 ```
 
@@ -418,7 +418,7 @@ cd ~/takeout-browser && node - <<'JS'
 const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 (async () => {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-  const page = browser.contexts()[0].pages().find(p => p.url().startsWith('DICTATION_SERVICE_URL/'));
+  const page = browser.contexts()[0].pages().find(p => p.url().startsWith('${DICTATION_SERVICE_URL}/'));
   const controls = await page.evaluate(() => {
     const visible = (el) => {
       const style = getComputedStyle(el);
@@ -447,7 +447,7 @@ cd ~/takeout-browser && node - <<'JS'
 const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
 (async () => {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-  const page = browser.contexts()[0].pages().find(p => p.url().startsWith('DICTATION_SERVICE_URL/'));
+  const page = browser.contexts()[0].pages().find(p => p.url().startsWith('${DICTATION_SERVICE_URL}/'));
   const state = await page.evaluate(async () => {
     const micPermission = await navigator.permissions.query({ name: 'microphone' }).then(p => p.state).catch(e => `error: ${e.message}`);
     const devices = await navigator.mediaDevices.enumerateDevices().then(ds => ds.map(d => ({ kind: d.kind, label: d.label }))).catch(e => [{ error: e.message }]);

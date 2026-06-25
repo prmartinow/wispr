@@ -1,7 +1,7 @@
 'use strict';
 // wispr transcription service — implements contract/transcribe.md.
 // Batch uploads are streamed to a private temp file, validated as bounded WAV,
-// then serialized onto the single dictation service dictation backend.
+// then serialized onto the single dictation service backend.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -10,7 +10,6 @@ const https = require('https');
 const os = require('os');
 const path = require('path');
 const Busboy = require('busboy');
-const dictate = require('./dictate');
 const { WebSocket, WebSocketServer } = require('ws');
 const { spawn } = require('child_process');
 
@@ -26,6 +25,9 @@ function loadEnv(p) {
   return out;
 }
 const env = loadEnv(path.join(__dirname, '.env'));
+for (const [name, value] of Object.entries(env)) {
+  if (process.env[name] === undefined) process.env[name] = value;
+}
 const cfg = (name, fallback = '') => process.env[name] || env[name] || fallback;
 const numCfg = (name, fallback) => {
   const n = Number(cfg(name, ''));
@@ -49,7 +51,8 @@ const CLIENT_CERT_SHA256 = new Set(
 );
 
 const ENGINE = 'dictation-service';
-const DEVTOOLS = 'http://127.0.0.1:9223/json/version'; // the dedicated dictation service service browser
+const DEVTOOLS = 'http://127.0.0.1:9223/json/version'; // the dedicated dictation service browser
+const dictate = require('./dictate');
 
 const MAX_AUDIO_SECONDS = numCfg('MAX_AUDIO_SECONDS', 600);
 const BATCH_UPLOAD_MAX_BYTES = numCfg('BATCH_UPLOAD_MAX_BYTES', 64 * 1024 * 1024);

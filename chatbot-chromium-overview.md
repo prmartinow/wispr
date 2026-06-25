@@ -26,7 +26,7 @@ rpc-chromium-browser skill
 Important moments:
 
 - Used `rpc-chromium-browser` to inspect live Chromium tabs.
-- Found dictation service at `DICTATION_SERVICE_URL/`.
+- Found dictation service at `${DICTATION_SERVICE_URL}/`.
 - Sent `hello world` through the visible dictation service composer.
 - Created `~/takeout-browser/dictationService_send_and_save.js`.
 - Extended that into `~/dev/chatbot-cli/CB.js`.

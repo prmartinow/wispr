@@ -632,7 +632,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .unknown: return "Server not ready"
         case .up: return "Server ready"
         case .loading: return "Server warming up"
-        case .loggedOut: return "dictation service logged out"
+        case .loggedOut: return "Dictation service logged out"
         case .backendDown: return "Backend down"
         case .serverOffline: return "Server has no internet"
         case .unauthorized: return "Unauthorized"

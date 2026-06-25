@@ -1,8 +1,8 @@
 'use strict';
-// dictation service web-dictation backend. Two modes, both serialized onto the single composer/mic:
+// Web dictation backend. Two modes, both serialized onto the single composer/mic:
 //   - batch : transcribe(buf)                       -> paplay a full WAV, submit, scrape
 //   - stream: startStream()/pushAudio()/stopStream() -> pacat live PCM into the mic, submit, scrape
-// Audio is injected into the PulseAudio virtual mic (sink "virtmic"). Never sends to dictation service.
+// Audio is injected into the PulseAudio virtual mic (sink "virtmic").
 
 const fs = require('fs');
 const os = require('os');
@@ -37,7 +37,7 @@ function batchBusy() { return INTERNAL_LANES > 0 ? internalPoolFull() : _busy; }
 //   - 'bytes' mode (STREAM_DRAIN_MODE=bytes): estimate the tail as audio_written - elapsed and wait
 //     that + margin, skipping pacat's ~0.9s teardown. Lower latency but it UNDER-waits when pacat's
 //     startup delay exceeds the margin -> intermittent end-clip. Opt-in only.
-//   - STREAM_SUBMIT_SETTLE_MS : brief pause after the tail is rendered so dictation service's ASR finalizes it.
+//   - STREAM_SUBMIT_SETTLE_MS : brief pause after the tail is rendered so the dictation service finalizes it.
 //   - STREAM_TAIL_MARGIN_MS   : ('bytes' mode) safety margin over the estimated tail.
 //   - STREAM_DRAIN_MAX_MS     : hard cap on the drain wait (safety net for a wedged pacat).
 const STREAM_DRAIN_MODE = (process.env.STREAM_DRAIN_MODE || 'drain').toLowerCase();
@@ -81,8 +81,16 @@ function lastResult() { return _last; }
 
 // --- browser page (reused; reconnects if dropped) ---------------------------
 let _browser = null, _page = null;
-const dictationService_URL = 'DICTATION_SERVICE_URL/';
-const isdictationServicePage = page => page && !page.isClosed() && page.url().startsWith(dictationService_URL);
+const DICTATION_SERVICE_URL = normalizeDictationServiceURL(process.env.DICTATION_SERVICE_URL || '');
+function normalizeDictationServiceURL(raw) {
+  const value = raw.trim();
+  if (!value) throw new Error('DICTATION_SERVICE_URL is required');
+  const url = new URL(value);
+  if (!/^https?:$/.test(url.protocol)) throw new Error('DICTATION_SERVICE_URL must be http(s)');
+  url.hash = '';
+  return url.href.endsWith('/') ? url.href : `${url.href}/`;
+}
+const isDictationServicePage = page => page && !page.isClosed() && page.url().startsWith(DICTATION_SERVICE_URL);
 const isBlankPage = page => {
   if (!page || page.isClosed()) return false;
   const url = page.url();
@@ -91,18 +99,18 @@ const isBlankPage = page => {
 
 async function normalizeServicePages(ctx, preferred = null) {
   let pages = ctx.pages().filter(p => !p.isClosed());
-  let chatPages = pages.filter(isdictationServicePage);
-  let page = isdictationServicePage(preferred) ? preferred : chatPages[0];
+  let servicePages = pages.filter(isDictationServicePage);
+  let page = isDictationServicePage(preferred) ? preferred : servicePages[0];
 
   if (!page) {
     page = pages.find(isBlankPage) || await ctx.newPage();
-    if (!isdictationServicePage(page)) await page.goto(dictationService_URL);
+    if (!isDictationServicePage(page)) await page.goto(DICTATION_SERVICE_URL);
   }
 
-  chatPages = ctx.pages().filter(isdictationServicePage);
-  const duplicateChat = chatPages.filter(p => p !== page);
-  if (duplicateChat.length) console.warn(`[wispr-dictate] closing ${duplicateChat.length} duplicate dictation service service tab(s)`);
-  await Promise.all(duplicateChat.map(p => p.close().catch(() => {})));
+  servicePages = ctx.pages().filter(isDictationServicePage);
+  const duplicateServicePages = servicePages.filter(p => p !== page);
+  if (duplicateServicePages.length) console.warn(`[wispr-dictate] closing ${duplicateServicePages.length} duplicate dictation service tab(s)`);
+  await Promise.all(duplicateServicePages.map(p => p.close().catch(() => {})));
 
   const blankPages = ctx.pages().filter(p => p !== page && isBlankPage(p));
   await Promise.all(blankPages.map(p => p.close().catch(() => {})));
@@ -240,7 +248,7 @@ async function ensureDictationUnblocked(page) {
   if (!blocker) return;
   console.warn(`[wispr-dictate] ${blockerLabel(blocker)} blocks dictation; trying to dismiss`);
   blocker = await dismissBlockingModal(page);
-  if (blocker) throw makeBackendUnavailable(`dictation service is blocked by ${blockerLabel(blocker)}`);
+  if (blocker) throw makeBackendUnavailable(`Dictation service is blocked by ${blockerLabel(blocker)}`);
 }
 
 async function clearComposer(page) {
@@ -315,7 +323,7 @@ async function startDictation(page, signal) {
     await page.click('[aria-label="Start dictation"]', { timeout: 5000 });
   } catch (e) {
     const blocker = await blockingModalState(page).catch(() => null);
-    if (blocker) throw makeBackendUnavailable(`dictation service is blocked by ${blockerLabel(blocker)}`);
+    if (blocker) throw makeBackendUnavailable(`Dictation service is blocked by ${blockerLabel(blocker)}`);
     throw e;
   }
   throwIfAborted(signal);
@@ -323,7 +331,7 @@ async function startDictation(page, signal) {
     await page.waitForSelector('[aria-label="Submit dictation"]', { timeout: 8000 });
   } catch (e) {
     const blocker = await blockingModalState(page).catch(() => null);
-    if (blocker) throw makeBackendUnavailable(`dictation service is blocked by ${blockerLabel(blocker)}`);
+    if (blocker) throw makeBackendUnavailable(`Dictation service is blocked by ${blockerLabel(blocker)}`);
     throw e;
   }
 }
@@ -443,7 +451,7 @@ async function stopStream(s) {
       await new Promise(res => { try { s.pacat.stdin.end(res); } catch (_) { res(); } });
       await Promise.race([ new Promise(res => s.pacat.once('close', res)), sleep(STREAM_DRAIN_MAX_MS) ]);
     }
-    // Brief settle so dictation service's streaming recognizer finalizes the just-rendered tail before Submit.
+    // Brief settle so the streaming recognizer finalizes the just-rendered tail before Submit.
     if (STREAM_SUBMIT_SETTLE_MS > 0) await sleep(STREAM_SUBMIT_SETTLE_MS);
     const drainMs = Date.now() - drainStarted;
     const text = await submitAndScrape(s.page);
