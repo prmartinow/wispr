@@ -8,7 +8,20 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { chromium } = require('~/takeout-browser/node_modules/playwright-core');
+
+function loadPlaywrightCore() {
+  const mod = process.env.WISPR_PLAYWRIGHT_CORE_PATH || 'playwright-core';
+  try {
+    return require(mod);
+  } catch (e) {
+    const hint = process.env.WISPR_PLAYWRIGHT_CORE_PATH
+      ? `WISPR_PLAYWRIGHT_CORE_PATH=${process.env.WISPR_PLAYWRIGHT_CORE_PATH}`
+      : 'install playwright-core or set WISPR_PLAYWRIGHT_CORE_PATH';
+    e.message = `failed to load playwright-core (${hint}): ${e.message}`;
+    throw e;
+  }
+}
+const { chromium } = loadPlaywrightCore();
 
 const CDP = process.env.DICTATE_CDP || 'http://127.0.0.1:9223';
 const SINK = process.env.DICTATE_SINK || 'virtmic';

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Contract test — the "running system is the source of truth" check from COORDINATION.md.
+# Contract test against a running Wispr server.
 # Runs from the Mac against the live server and fails loudly if the two halves have drifted:
 # wrong audio format, missing/!200 healthz, missing auth, or a response that doesn't match
 # CONTRACT.md (must contain a "text" field).

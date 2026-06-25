@@ -3,6 +3,20 @@
 # ops has linger enabled, so these start at boot. Idempotent.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+WISPR_STATE_DIR="${WISPR_STATE_DIR:-$HOME/.wispr}"
+mkdir -p "$WISPR_STATE_DIR/env" "$WISPR_STATE_DIR/mtls" \
+         "$WISPR_STATE_DIR/profiles/service" "$WISPR_STATE_DIR/profiles/lanes" \
+         "$WISPR_STATE_DIR/vnc/auth" "$WISPR_STATE_DIR/logs"
+chmod 700 "$WISPR_STATE_DIR" "$WISPR_STATE_DIR/env" "$WISPR_STATE_DIR/mtls" \
+          "$WISPR_STATE_DIR/profiles" "$WISPR_STATE_DIR/profiles/service" \
+          "$WISPR_STATE_DIR/profiles/lanes" "$WISPR_STATE_DIR/vnc" \
+          "$WISPR_STATE_DIR/vnc/auth" "$WISPR_STATE_DIR/logs"
+if [ -f "$WISPR_STATE_DIR/env/server.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$WISPR_STATE_DIR/env/server.env"
+  set +a
+fi
 mkdir -p "$HOME/.config/systemd/user"
 chmod +x "$HERE/setup-virtmic.sh" "$HERE/setup-lanes.sh" "$HERE/wispr-lane.sh" \
          "$HERE/wispr-browser.sh" "$HERE/chrome-paths.sh" "$HERE/prepare-chrome-sandbox.sh" \

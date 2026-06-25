@@ -5,7 +5,7 @@ Description=wispr virtual mic (PulseAudio daemon + null-sink/remap source)
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=~/dev/wispr/deploy/setup-virtmic.sh
+ExecStart=%h/dev/wispr/deploy/setup-virtmic.sh
 
 [Install]
 WantedBy=default.target

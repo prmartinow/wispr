@@ -3,7 +3,7 @@
 # over time (chromium-1217, chromium-1223, ...), so services must not pin one version.
 
 resolve_wispr_chrome() {
-  local candidate
+  local candidate root
 
   if [ -n "${WISPR_CHROME:-}" ] && [ -x "$WISPR_CHROME" ]; then
     printf '%s\n' "$WISPR_CHROME"
@@ -16,12 +16,16 @@ resolve_wispr_chrome() {
       return 0
     fi
   done < <(
-    find /mnt/data/takeout-browser-profile/ms-playwright \
-         ~/.cache/ms-playwright \
-         -type f -path '*/chromium-*/chrome-linux*/chrome' 2>/dev/null | sort -Vr
+    for root in ${WISPR_PLAYWRIGHT_BROWSERS_ROOTS:-"$HOME/.cache/ms-playwright"}; do
+      [ -d "$root" ] && find "$root" -type f -path '*/chromium-*/chrome-linux*/chrome' 2>/dev/null
+    done | sort -Vr
   )
 
-  candidate="$(node -e 'const p=require("~/takeout-browser/node_modules/playwright-core"); console.log(p.chromium.executablePath())' 2>/dev/null || true)"
+  candidate="$(node -e '
+const mod = process.env.WISPR_PLAYWRIGHT_CORE_PATH || "playwright-core";
+const p = require(mod);
+console.log(p.chromium.executablePath());
+' 2>/dev/null || true)"
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then
     printf '%s\n' "$candidate"
     return 0

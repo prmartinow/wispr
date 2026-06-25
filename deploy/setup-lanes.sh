@@ -5,7 +5,11 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/lanes.env"
-SRC=~/.wispr/profiles/service
+WISPR_STATE_DIR="${WISPR_STATE_DIR:-$HOME/.wispr}"
+WISPR_PROFILE_ROOT="${WISPR_PROFILE_ROOT:-$WISPR_STATE_DIR/profiles}"
+WISPR_SERVICE_PROFILE="${WISPR_SERVICE_PROFILE:-$WISPR_PROFILE_ROOT/service}"
+WISPR_LANE_PROFILE_ROOT="${WISPR_LANE_PROFILE_ROOT:-$WISPR_PROFILE_ROOT/lanes}"
+SRC="$WISPR_SERVICE_PROFILE"
 N="${WISPR_LANES:-0}"
 
 [ -d "$SRC" ] || { echo "source profile $SRC missing" >&2; exit 1; }
@@ -23,7 +27,7 @@ EXCLUDES=(
   --exclude='*/blob_storage' --exclude='Default/File System' --exclude='Default/Service Worker'
 )
 for k in $(seq 1 "$N"); do
-  DST="~/.wispr/profiles/lanes/${k}-profile"
+  DST="$WISPR_LANE_PROFILE_ROOT/$k"
   mkdir -p "$DST"
   rsync -a --delete --delete-excluded "${EXCLUDES[@]}" "$SRC"/ "$DST"/
   rm -f "$DST"/Singleton* "$DST"/Default/Singleton* 2>/dev/null || true

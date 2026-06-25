@@ -13,17 +13,21 @@ enum ActivationMode: String, CaseIterable, Identifiable {
 }
 
 enum EndpointPolicy {
-    static let lanURLString = "https://wispr.local:8443"
-    static let remoteURLString = "https://wispr.p12w.xyz"
+    static let defaultLANURLString = "https://wispr.local:8443"
+    static let defaultRemoteURLString = ""
+    static let serverURLDefaultsKey = "wispr.serverURL"
+    static let remoteURLDefaultsKey = "wispr.remoteURL"
 
-    private static let legacyLANURLStrings: Set<String> = [
-        "http://wispr.local:8090",
-        "http://wispr.local:8090",
-    ]
+    static var lanURLString: String {
+        ProcessInfo.processInfo.environment["WISPR_DEFAULT_SERVER_URL"] ?? defaultLANURLString
+    }
+
+    static var remoteURLString: String {
+        ProcessInfo.processInfo.environment["WISPR_DEFAULT_REMOTE_URL"] ?? defaultRemoteURLString
+    }
 
     static func migrateLAN(_ raw: String) -> String {
-        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return legacyLANURLStrings.contains(s) ? lanURLString : s
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func allowed(_ url: URL) -> Bool {
@@ -32,14 +36,42 @@ enum EndpointPolicy {
 
     static func allowedLAN(_ url: URL) -> Bool {
         url.scheme?.lowercased() == "https"
-            && url.host?.lowercased() == "wispr.local"
-            && (url.port ?? 443) == 8443
+            && !(url.host ?? "").isEmpty
+            && [443, 8443].contains(url.port ?? 443)
     }
 
     static func allowedRemote(_ url: URL) -> Bool {
         url.scheme?.lowercased() == "https"
-            && url.host?.lowercased() == "wispr.p12w.xyz"
-            && (url.port ?? 443) == 443
+            && !(url.host ?? "").isEmpty
+            && [443, 8443].contains(url.port ?? 443)
+    }
+
+    static func configuredLANHosts() -> Set<String> {
+        endpointHosts([
+            UserDefaults.standard.string(forKey: serverURLDefaultsKey),
+            ProcessInfo.processInfo.environment["WISPR_SERVER_URL"],
+            lanURLString
+        ])
+    }
+
+    static func configuredClientCertHosts() -> Set<String> {
+        endpointHosts([
+            UserDefaults.standard.string(forKey: serverURLDefaultsKey),
+            UserDefaults.standard.string(forKey: remoteURLDefaultsKey),
+            ProcessInfo.processInfo.environment["WISPR_SERVER_URL"],
+            ProcessInfo.processInfo.environment["WISPR_REMOTE_URL"],
+            lanURLString,
+            remoteURLString
+        ])
+    }
+
+    private static func endpointHosts(_ rawValues: [String?]) -> Set<String> {
+        Set(rawValues.compactMap { raw in
+            guard let raw,
+                  let host = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines))?.host,
+                  !host.isEmpty else { return nil }
+            return host.lowercased()
+        })
     }
 }
 

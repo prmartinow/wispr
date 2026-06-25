@@ -540,7 +540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // If no AX element is exposed (Electron/web apps like VS Code keep a11y lazy), force the
         // target app's accessibility tree on (AXManualAccessibility, like Wispr Flow) and re-query.
         // Then `el != nil` ⇒ a real field (verify it); `el == nil` ⇒ genuinely no field ⇒ keep the
-        // ⌘V hint instead of falsely claiming insertion (superwhisper/Wispr Flow behavior).
+        // ⌘V hint instead of falsely claiming insertion.
         var el = FocusedField.focusedElement()
         if el == nil, let pid = pasteTarget?.appPID, pid > 0 {
             FocusedField.enableElectronAccessibility(pid: pid)

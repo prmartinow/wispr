@@ -4,8 +4,11 @@
 # fingerprint. Internal identity stays separate from the mac client (independently revocable).
 # Idempotent. After running: restart wispr-server.
 set -euo pipefail
-DIR=~/.wispr/mtls
-ENVF=~/dev/wispr/server/.env
+WISPR_STATE_DIR="${WISPR_STATE_DIR:-$HOME/.wispr}"
+DIR="${WISPR_MTLS_DIR:-$WISPR_STATE_DIR/mtls}"
+ENVF="${WISPR_ENV_FILE:-$WISPR_STATE_DIR/env/server.env}"
+mkdir -p "$DIR" "$(dirname "$ENVF")"
+chmod 700 "$WISPR_STATE_DIR" "$DIR" "$(dirname "$ENVF")"
 cd "$DIR"
 
 # 1) internal CA (separate from the existing client CA)
@@ -30,6 +33,8 @@ cat ca.crt wispr-internal-ca.crt > client-ca-bundle.crt
 # 4) pin the internal client cert fingerprint (append; keep the mac client's)
 FP=$(openssl x509 -in wispr-internal-client.crt -noout -fingerprint -sha256 | sed 's/.*=//; s/://g' | tr 'a-z' 'A-Z')
 echo "internal client cert SHA-256: $FP"
+touch "$ENVF"
+chmod 600 "$ENVF"
 cur=$(grep -E '^MTLS_CLIENT_CERT_SHA256=' "$ENVF" | cut -d= -f2- || true)
 if echo "$cur" | tr 'a-z' 'A-Z' | grep -q "$FP"; then
   echo "fingerprint already pinned"

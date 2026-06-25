@@ -17,9 +17,13 @@ configure_wispr_chrome_env
 export DISPLAY="${DISPLAY:-:95}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export PULSE_SOURCE="virtmic${k}_in"
+WISPR_STATE_DIR="${WISPR_STATE_DIR:-$HOME/.wispr}"
+WISPR_PROFILE_ROOT="${WISPR_PROFILE_ROOT:-$WISPR_STATE_DIR/profiles}"
+WISPR_LANE_PROFILE_ROOT="${WISPR_LANE_PROFILE_ROOT:-$WISPR_PROFILE_ROOT/lanes}"
 
-PROFILE="~/.wispr/profiles/lanes/${k}-profile"
+PROFILE="$WISPR_LANE_PROFILE_ROOT/$k"
 PORT=$(( 9223 + k ))
+mkdir -p "$PROFILE"
 
 # Tile in a 4-wide grid of 480x540 cells (470x530 windows + small gap) on the 1920x1080 display.
 # Cell 0 is the frontend (lane 0); internal lanes take cells 1..N.

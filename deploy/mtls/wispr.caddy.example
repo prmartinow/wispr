@@ -1,0 +1,10 @@
+# Replace the placeholders before installing this in Caddy.
+{$WISPR_PUBLIC_HOST} {
+	tls {
+		client_auth {
+			mode require_and_verify
+			trusted_ca_cert_file {$WISPR_CLIENT_CA_FILE}
+		}
+	}
+	reverse_proxy {$WISPR_UPSTREAM_URL}
+}

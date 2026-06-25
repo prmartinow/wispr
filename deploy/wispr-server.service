@@ -5,19 +5,22 @@ Wants=wispr-browser.service wispr-virtmic.service
 
 [Service]
 Type=simple
-WorkingDirectory=~/dev/wispr/server
+WorkingDirectory=%h/dev/wispr/server
+Environment=WISPR_STATE_DIR=%h/.wispr
+Environment=WISPR_ENV_FILE=%h/.wispr/env/server.env
 Environment=PORT=8090
 Environment=HOST=0.0.0.0
 Environment=LAN_TLS_PORT=8443
 Environment=LAN_TLS_HOST=0.0.0.0
-Environment=LAN_TLS_KEY=~/.wispr/mtls/rpc-server.key
-Environment=LAN_TLS_CERT=~/.wispr/mtls/rpc-server.crt
-Environment=LAN_TLS_CA=~/.wispr/mtls/client-ca-bundle.crt
+Environment=LAN_TLS_KEY=%h/.wispr/mtls/rpc-server.key
+Environment=LAN_TLS_CERT=%h/.wispr/mtls/rpc-server.crt
+Environment=LAN_TLS_CA=%h/.wispr/mtls/client-ca-bundle.crt
 # WISPR_LANES (internal batch concurrency) lives here so the server, virtmic setup, and lane units
 # all share one source of truth. "-" = tolerate the file being absent.
-EnvironmentFile=-~/dev/wispr/deploy/lanes.env
+EnvironmentFile=-%h/dev/wispr/deploy/lanes.env
+EnvironmentFile=-%h/.wispr/env/server.env
 Environment=REQUIRE_LAN_MTLS=1
-ExecStart=/usr/bin/node ~/dev/wispr/server/server.js
+ExecStart=/usr/bin/node %h/dev/wispr/server/server.js
 Restart=always
 RestartSec=3
 UMask=0077

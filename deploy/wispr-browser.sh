@@ -11,9 +11,13 @@ configure_wispr_chrome_env
 export DISPLAY="${DISPLAY:-:95}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export PULSE_SOURCE="${PULSE_SOURCE:-virtmic_in}"
+WISPR_STATE_DIR="${WISPR_STATE_DIR:-$HOME/.wispr}"
+WISPR_PROFILE_ROOT="${WISPR_PROFILE_ROOT:-$WISPR_STATE_DIR/profiles}"
+WISPR_SERVICE_PROFILE="${WISPR_SERVICE_PROFILE:-$WISPR_PROFILE_ROOT/service}"
+mkdir -p "$WISPR_SERVICE_PROFILE"
 
 exec "$CHROME" \
-  --user-data-dir=~/.wispr/profiles/service \
+  --user-data-dir="$WISPR_SERVICE_PROFILE" \
   --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 \
   --no-first-run --no-default-browser-check --disable-dev-shm-usage \
   --use-fake-ui-for-media-stream \

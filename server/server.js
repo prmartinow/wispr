@@ -13,9 +13,10 @@ const Busboy = require('busboy');
 const { WebSocket, WebSocketServer } = require('ws');
 const { spawn } = require('child_process');
 
-// --- config (server/.env, gitignored) -------------------------------------
+// --- config (external env file preferred; server/.env remains a local-dev fallback) ---
 function loadEnv(p) {
   const out = {};
+  if (!p) return out;
   try {
     for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
       const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/i);
@@ -24,7 +25,10 @@ function loadEnv(p) {
   } catch (_) { /* no .env -> rely on process.env */ }
   return out;
 }
-const env = loadEnv(path.join(__dirname, '.env'));
+const env = {
+  ...loadEnv(path.join(__dirname, '.env')),
+  ...loadEnv(process.env.WISPR_ENV_FILE || path.join(os.homedir(), '.wispr/env/server.env'))
+};
 for (const [name, value] of Object.entries(env)) {
   if (process.env[name] === undefined) process.env[name] = value;
 }
@@ -39,9 +43,10 @@ const HTTP_PORT = numCfg('PORT', 8090);
 const HTTP_HOST = cfg('HOST', '0.0.0.0'); // reached by VPS Caddy/WG and legacy LAN clients.
 const HTTPS_PORT = numCfg('LAN_TLS_PORT', 8443);
 const HTTPS_HOST = cfg('LAN_TLS_HOST', '0.0.0.0');
-const LAN_TLS_KEY = cfg('LAN_TLS_KEY', '~/.wispr/mtls/rpc-server.key');
-const LAN_TLS_CERT = cfg('LAN_TLS_CERT', '~/.wispr/mtls/rpc-server.crt');
-const LAN_TLS_CA = cfg('LAN_TLS_CA', '~/.wispr/mtls/ca.crt');
+const WISPR_STATE_DIR = cfg('WISPR_STATE_DIR', path.join(os.homedir(), '.wispr'));
+const LAN_TLS_KEY = cfg('LAN_TLS_KEY', path.join(WISPR_STATE_DIR, 'mtls/rpc-server.key'));
+const LAN_TLS_CERT = cfg('LAN_TLS_CERT', path.join(WISPR_STATE_DIR, 'mtls/rpc-server.crt'));
+const LAN_TLS_CA = cfg('LAN_TLS_CA', path.join(WISPR_STATE_DIR, 'mtls/ca.crt'));
 const REQUIRE_LAN_MTLS = /^(1|true|yes)$/i.test(cfg('REQUIRE_LAN_MTLS', '0'));
 const CLIENT_CERT_SHA256 = new Set(
   cfg('MTLS_CLIENT_CERT_SHA256', '')

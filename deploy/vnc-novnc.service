@@ -5,7 +5,7 @@ After=vnc-x11vnc.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/websockify --web=/usr/share/novnc/ --cert=~/.wispr/mtls/rpc-server.crt --key=~/.wispr/mtls/rpc-server.key --ssl-only --verify-client --cafile=~/.wispr/mtls/ca.crt 0.0.0.0:6083 127.0.0.1:5903
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc/ --cert=%h/.wispr/mtls/rpc-server.crt --key=%h/.wispr/mtls/rpc-server.key --ssl-only --verify-client --cafile=%h/.wispr/mtls/ca.crt 0.0.0.0:6083 127.0.0.1:5903
 Restart=always
 RestartSec=2
 UMask=0077

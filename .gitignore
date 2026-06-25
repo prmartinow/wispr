@@ -7,10 +7,14 @@ server/.env
 *.mp4
 *.log
 .DS_Store
+COORDINATION.md
+chatbot-*.md
 client-macos/build/
 client-macos/.build/
 client-macos/DerivedData/
 client-macos/wispr.app/
+transcribe/
 
 # mTLS client cert (off-repo)
 *.p12
+deploy/mtls/*.crt

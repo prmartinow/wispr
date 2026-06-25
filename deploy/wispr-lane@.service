@@ -6,8 +6,12 @@ PartOf=wispr-virtmic.service
 
 [Service]
 Type=simple
-ExecStartPre=~/dev/wispr/deploy/prepare-chrome-sandbox.sh
-ExecStart=~/dev/wispr/deploy/wispr-lane.sh %i
+Environment=WISPR_STATE_DIR=%h/.wispr
+Environment=WISPR_PROFILE_ROOT=%h/.wispr/profiles
+Environment=WISPR_LANE_PROFILE_ROOT=%h/.wispr/profiles/lanes
+EnvironmentFile=-%h/.wispr/env/server.env
+ExecStartPre=%h/dev/wispr/deploy/prepare-chrome-sandbox.sh
+ExecStart=%h/dev/wispr/deploy/wispr-lane.sh %i
 Restart=always
 RestartSec=5
 UMask=0077

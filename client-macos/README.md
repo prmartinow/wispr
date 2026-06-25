@@ -10,12 +10,11 @@ cd client-macos
 ./scripts/package_app.sh        # -> wispr.app (Info.plist, app icon, stable local signing)
 open ./wispr.app              # configure server/token in Settings (gear), or seed via env:
 # WISPR_SERVER_URL=https://wispr.local:8443 \
-# WISPR_TOKEN="$(ssh -p 2224 user@wispr.local 'sed -n s/^WISPR_BEARER_TOKEN=//p ~/dev/wispr/server/.env')" \
+# WISPR_TOKEN=replace-me \
 #   open ./wispr.app
 ```
-Server URL defaults to `https://wispr.local:8443` over LAN mTLS. The token and client
-mTLS files are stored under `~/Library/Application Support/wispr` with private permissions
-(seeded once from `WISPR_TOKEN` and the local mTLS bundle).
+Set the server URL in Settings or seed it once with `WISPR_SERVER_URL`. The token and client
+mTLS files are stored under `~/Library/Application Support/wispr` with private permissions.
 
 ## GUI
 - **Floating HUD pill** (bottom-center, always-on-top, non-activating so it never steals focus):

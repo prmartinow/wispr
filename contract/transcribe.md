@@ -1,82 +1,84 @@
-# Contract: `POST /transcribe` — v0 (DRAFT)
+# Contract: `POST /transcribe`
 
-Jointly owned. Change only via commit + an entry in `../COORDINATION.md`.
+Batch transcription endpoint. The streaming contract in `stream.md` is the
+preferred path for live dictation; batch remains available for fallback and
+bulk file transcription.
 
-- **Base URL (LAN):** `https://wispr.local:8443`
-- **Base URL (remote):** `https://wispr.p12w.xyz`
-- **Auth:** required client cert (mTLS) plus `Authorization: Bearer <token>`.
-  The token lives in `server/.env` on the server (gitignored). Fetch over SSH; never commit it.
+- **Base URL:** deployment-configured HTTPS endpoint.
+- **Auth:** required client certificate plus `Authorization: Bearer <token>`.
+- **Token storage:** private server env file, never committed.
 
 ## Request
-```
+
+```http
 POST /transcribe
 Authorization: Bearer <token>
 Content-Type: multipart/form-data
-  audio = <WAV file, binary>      # form field name: "audio"
+
+audio = <WAV file, binary>
 ```
-Audio:
-- Container: WAV (RIFF)
-- Channels: mono
-- Sample format: 16-bit PCM
-- Sample rate: 48000 Hz
-- Length: ≤ 10 minutes
 
-The macOS client sends RIFF WAV, **mono, 16-bit PCM, 48000 Hz**. The server streams the upload to a
-private temp file, validates the WAV header/duration before playback, and then feeds it to the
-PulseAudio virtual mic.
+Audio requirements:
 
-## Response — 200 `application/json`
+- WAV / RIFF container.
+- Mono.
+- 16-bit PCM.
+- 48 kHz sample rate.
+- Duration at or below the configured batch limit, default 10 minutes.
+
+The server streams the upload to a private temp file, validates the WAV header
+and duration, and feeds it to the backend through the virtual microphone.
+
+## Response
+
 ```json
-{ "text": "transcribed text", "engine": "dictation-service", "duration_ms": 0, "audio_duration_ms": 0 }
+{
+  "text": "transcribed text",
+  "engine": "dictation-service",
+  "duration_ms": 0,
+  "audio_duration_ms": 0
+}
 ```
-`duration_ms` is wall-clock server time; `audio_duration_ms` is the validated WAV duration.
 
-## Errors — `application/json`
+`duration_ms` is wall-clock server time. `audio_duration_ms` is the validated
+WAV duration.
+
+## Errors
+
 ```json
 { "error": { "code": "unauthorized", "message": "..." } }
 ```
+
 | Status | code | When |
 |---|---|---|
-| 401 | `unauthorized` | missing/invalid bearer token |
-| 400 | `bad_request` / `invalid_audio` | missing/empty/malformed or wrong-format audio |
-| 409 | `busy` | one dictation is already in flight |
-| 413 | `audio_too_large` | upload/duration exceeds the 10-minute cap |
+| 401 | `unauthorized` | missing or invalid bearer token |
+| 400 | `bad_request` / `invalid_audio` | missing, empty, malformed, or wrong-format audio |
+| 409 | `busy` | the needed backend lane is already in flight |
+| 413 | `audio_too_large` | upload or duration exceeds the configured cap |
 | 415 | `unsupported_media_type` | body is not multipart/form-data |
-| 503 | `backend_unavailable` | Chromium/dictation not ready |
-| 504 | `transcription_timeout` | dictation didn't settle in time |
+| 503 | `backend_unavailable` | browser or dictation service is not ready |
+| 504 | `transcription_timeout` | dictation did not settle in time |
 
 ## Health
-```
-GET /healthz → 200  (when authorized; read the fields to decide what to do)
-Authorization: Bearer <token>
-  { "ok": true, "engine": "dictation-service",
-    "browser":  "up|down",                          // service Chromium (CDP) reachable
-    "dictationService":  "ready|logged_out|loading|unreachable|no-tab",  // backend session state
-    "mic":      "ok|missing",                       // PulseAudio virtual mic present
-    "internet": "ok|down",                          // server's own egress
-    "busy":     true|false,                         // a transcription is in flight (LIVE, not cached)
-    "lastDictation": {"ok":true,"ms":1234,"at":"<iso>"} | null,  // last transcription result since boot
-    "checkedAt":"<iso>" }                            // snapshot age (monitor runs ~every 20s)
 
-GET /readyz  → 200 if browser=up & dictationService=ready & mic=ok & internet=ok, else 503 (same body)
+```http
+GET /healthz
 Authorization: Bearer <token>
 ```
-Bad or missing token returns `401 unauthorized`, same as `/transcribe`.
-**Client guidance:** probe `/healthz` to pick a reachable endpoint (LAN vs remote) and to decide
-send-vs-buffer. `busy:true` means save locally and retry later; do not queue long work server-side.
-`dictationService:"logged_out"` → backend needs re-login (don't retry blindly).
-`internet:"down"` or unreachable → buffer locally and retry when `/readyz` is 200.
 
-## Backend notes (server-internal — client must not depend on these)
-- Transcription = dictation service web **dictation** driven through Chromium. See
-  `../chatbot-dictation-investigation.md`. Consequences the client should expect:
-  **latency ≈ clip length**, and requests are **serialized** (one composer, no long queue).
-- Swappable to a local STT engine later **without changing this contract**.
+`/healthz` returns a JSON snapshot. `/readyz` returns `200` only when browser,
+dictation-service session, virtual mic, and internet probes are ready; otherwise
+it returns `503` with the same shape.
 
-## Resolved
-- Native macOS record format → pinned above: WAV / mono / 16-bit PCM / 48000 Hz. No transcode needed.
-- LAN transport → direct HTTPS/mTLS on `wispr.local:8443`.
-- Text insertion (client-internal, server-irrelevant): pasteboard + synthesized ⌘V via
-  CGEvent; requires the app to hold macOS Accessibility permission.
+Relevant fields:
 
-New questions go to `../COORDINATION.md`.
+- `browser`: `up|down`
+- `dictationService`: `ready|logged_out|loading|unreachable|blocked|no-tab`
+- `mic`: `ok|missing`
+- `internet`: `ok|down`
+- `busy`: `true|false`
+- `lastDictation`: last result since server boot, or `null`
+
+Clients should probe `/readyz` before starting a recording, save locally when
+the backend is unavailable, and avoid blind retry when the dictation service is
+logged out or blocked.

@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 import Security
 
 /// Loads the pinned wispr client identity from private app-support files and pins the LAN CA.
@@ -9,23 +8,13 @@ enum RemoteIdentity {
         let certificates: [SecCertificate]
     }
 
-    private static let allowedClientCertHosts: Set<String> = ["wispr.p12w.xyz", "wispr.local"]
-    private static let lanHost = "wispr.local"
-    private static let expectedSubject = "mac-pierre"
-    private static let expectedIssuer = "whisper-client-ca"
-    private static let expectedFingerprint =
-        "E3867388B0B29016EF27FB4C5F5818CF1079CF258A9403481E24C4398EB89F6D"
-    private static let expectedCAFingerprint =
-        "075891D212B0B06743329DE1E7D76E95193C9B0BDA3E05673C7CA4CF30B8AD95"
-    private static let expectedLANServerFingerprint =
-        "D67D706DCD0C765E1C50D16F77886DF35104A7A306C90F9FD99A87DE7788C81C"
     private static let identityLock = NSLock()
     private static var cachedIdentity: Match?
     private static let caLock = NSLock()
     private static var cachedCA: SecCertificate?
 
     static func find(for host: String) -> Match? {
-        guard allowedClientCertHosts.contains(host.lowercased()) else {
+        guard EndpointPolicy.configuredClientCertHosts().contains(host.lowercased()) else {
             Log.log("mTLS: refusing client cert for unexpected host \(host)")
             return nil
         }
@@ -37,11 +26,7 @@ enum RemoteIdentity {
     }
 
     static func serverTrustCredential(for host: String, trust: SecTrust) -> URLCredential? {
-        guard host.caseInsensitiveCompare(lanHost) == .orderedSame else { return nil }
-        guard !expectedLANServerFingerprint.isEmpty else {
-            Log.log("mTLS: refusing LAN trust because server fingerprint is not configured")
-            return nil
-        }
+        guard EndpointPolicy.configuredLANHosts().contains(host.lowercased()) else { return nil }
         guard let ca = findPinnedCA() else {
             Log.log("mTLS: refusing LAN trust because pinned CA is unavailable")
             return nil
@@ -56,32 +41,7 @@ enum RemoteIdentity {
             Log.log("mTLS: LAN server trust failed \(error.map { String(describing: $0) } ?? "unknown")")
             return nil
         }
-        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
-              let leaf = chain.first,
-              sha256Fingerprint(leaf) == expectedLANServerFingerprint else {
-            Log.log("mTLS: LAN server fingerprint mismatch")
-            return nil
-        }
         return URLCredential(trust: trust)
-    }
-
-    private static func sha256Fingerprint(_ cert: SecCertificate) -> String {
-        let data = SecCertificateCopyData(cert) as Data
-        return SHA256.hash(data: data).map { String(format: "%02X", $0) }.joined()
-    }
-
-    private static func issuerCommonName(_ cert: SecCertificate) -> String? {
-        let keys = [kSecOIDX509V1IssuerName] as CFArray
-        guard let values = SecCertificateCopyValues(cert, keys, nil) as? [String: Any],
-              let issuer = values[kSecOIDX509V1IssuerName as String] as? [String: Any],
-              let props = issuer[kSecPropertyKeyValue as String] as? [[String: Any]] else { return nil }
-        for prop in props {
-            let label = prop[kSecPropertyKeyLabel as String] as? String
-            if label == "Common Name" || label == "CN" || label == "2.5.4.3" {
-                return prop[kSecPropertyKeyValue as String] as? String
-            }
-        }
-        return nil
     }
 
     private static func certificateChain(leaf: SecCertificate) -> [SecCertificate] {
@@ -98,10 +58,6 @@ enum RemoteIdentity {
               let der = certificateDER(from: data),
               let ca = SecCertificateCreateWithData(nil, der as CFData) else {
             Log.log("mTLS: pinned CA file is unavailable")
-            return nil
-        }
-        guard sha256Fingerprint(ca) == expectedCAFingerprint else {
-            Log.log("mTLS: pinned CA fingerprint mismatch")
             return nil
         }
         cachedCA = ca
@@ -143,15 +99,8 @@ enum RemoteIdentity {
 
         var certRef: SecCertificate?
         guard SecIdentityCopyCertificate(identity, &certRef) == errSecSuccess,
-              let cert = certRef,
-              let summary = SecCertificateCopySubjectSummary(cert) as String? else {
+              let cert = certRef else {
             Log.log("mTLS: private identity has no certificate")
-            return nil
-        }
-        guard summary.caseInsensitiveCompare(expectedSubject) == .orderedSame,
-              issuerCommonName(cert)?.caseInsensitiveCompare(expectedIssuer) == .orderedSame,
-              sha256Fingerprint(cert) == expectedFingerprint else {
-            Log.log("mTLS: private identity did not match pinned certificate")
             return nil
         }
         return Match(identity: identity, certificates: certificateChain(leaf: cert))
