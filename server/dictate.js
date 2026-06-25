@@ -47,6 +47,7 @@ const STREAM_TAIL_MARGIN_MS = Number(process.env.STREAM_TAIL_MARGIN_MS || 200);
 const BYTES_PER_MS = 48000 * 2 / 1000; // 96 — s16le, mono, 48 kHz
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function makeAbortError() { const e = new Error('client disconnected'); e.code = 'client_closed'; return e; }
+function makeBackendUnavailable(message) { const e = new Error(message); e.code = 'backend_unavailable'; return e; }
 function throwIfAborted(signal) { if (signal && signal.aborted) throw makeAbortError(); }
 function abortableSleep(ms, signal) {
   if (!signal) return sleep(ms);
@@ -156,6 +157,92 @@ const dictationUIState = page => page.evaluate(() => {
     cancel: has(/^Cancel dictation$/i)
   };
 });
+
+const KNOWN_BLOCKING_MODALS = [
+  '#modal-subscription-failure',
+  '[data-testid="modal-subscription-failure"]'
+];
+
+function blockerLabel(blocker) {
+  if (!blocker) return 'unknown browser overlay';
+  if (blocker.kind === 'subscription_failure') return 'dictation service subscription failure modal';
+  if (blocker.id) return `browser overlay #${blocker.id}`;
+  if (blocker.testid) return `browser overlay ${blocker.testid}`;
+  return 'browser overlay';
+}
+
+async function blockingModalState(page) {
+  return page.evaluate((knownSelectors) => {
+    const visible = el => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 1 && r.height > 1;
+    };
+    const details = (kind, el) => ({
+      kind,
+      id: el.id || '',
+      testid: el.getAttribute('data-testid') || '',
+      role: el.getAttribute('role') || ''
+    });
+
+    for (const sel of knownSelectors) {
+      const el = document.querySelector(sel);
+      if (visible(el)) return details('subscription_failure', el);
+    }
+
+    const target = document.querySelector('[aria-label="Start dictation"],[aria-label="Submit dictation"]');
+    if (!visible(target)) return null;
+    const r = target.getBoundingClientRect();
+    const x = Math.max(0, Math.min(window.innerWidth - 1, r.left + r.width / 2));
+    const y = Math.max(0, Math.min(window.innerHeight - 1, r.top + r.height / 2));
+    const top = document.elementFromPoint(x, y);
+    if (!top || top === target || target.contains(top)) return null;
+
+    const overlay = top.closest('[id^="modal-"],[data-testid*="modal"],[data-testid*="Modal"],[role="dialog"],[data-state="open"]');
+    if (!overlay || overlay === target || target.contains(overlay) || !visible(overlay)) return null;
+    return details('blocking_overlay', overlay);
+  }, KNOWN_BLOCKING_MODALS);
+}
+
+async function dismissBlockingModal(page) {
+  const before = await blockingModalState(page);
+  if (!before) return null;
+  const closeSelectors = [
+    '#modal-subscription-failure button[aria-label="Close"]',
+    '[data-testid="modal-subscription-failure"] button[aria-label="Close"]',
+    '#modal-subscription-failure [role="button"][aria-label="Close"]',
+    '[data-testid="modal-subscription-failure"] [role="button"][aria-label="Close"]',
+    '#modal-subscription-failure button:has-text("Close")',
+    '[data-testid="modal-subscription-failure"] button:has-text("Close")',
+    '#modal-subscription-failure button:has-text("Not now")',
+    '[data-testid="modal-subscription-failure"] button:has-text("Not now")',
+    'button[aria-label="Close"]'
+  ];
+  for (const sel of closeSelectors) {
+    try {
+      await page.locator(sel).first().click({ timeout: 800 });
+      await sleep(250);
+      const after = await blockingModalState(page);
+      if (!after) return null;
+    } catch (_) {}
+  }
+  try {
+    await page.keyboard.press('Escape');
+    await sleep(250);
+  } catch (_) {}
+  return blockingModalState(page);
+}
+
+async function ensureDictationUnblocked(page) {
+  let blocker = await blockingModalState(page);
+  if (!blocker) return;
+  console.warn(`[wispr-dictate] ${blockerLabel(blocker)} blocks dictation; trying to dismiss`);
+  blocker = await dismissBlockingModal(page);
+  if (blocker) throw makeBackendUnavailable(`dictation service is blocked by ${blockerLabel(blocker)}`);
+}
+
 async function clearComposer(page) {
   try { await page.click('#prompt-textarea', { timeout: 4000 }); await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace'); } catch (_) {}
 }
@@ -220,11 +307,25 @@ const spawnPacat = () => spawn('pacat',
 
 async function startDictation(page, signal) {
   throwIfAborted(signal);
+  await ensureDictationUnblocked(page);
   await resetDictation(page);
   throwIfAborted(signal);
-  await page.click('[aria-label="Start dictation"]', { timeout: 8000 });
+  await ensureDictationUnblocked(page);
+  try {
+    await page.click('[aria-label="Start dictation"]', { timeout: 5000 });
+  } catch (e) {
+    const blocker = await blockingModalState(page).catch(() => null);
+    if (blocker) throw makeBackendUnavailable(`dictation service is blocked by ${blockerLabel(blocker)}`);
+    throw e;
+  }
   throwIfAborted(signal);
-  await page.waitForSelector('[aria-label="Submit dictation"]', { timeout: 8000 });
+  try {
+    await page.waitForSelector('[aria-label="Submit dictation"]', { timeout: 8000 });
+  } catch (e) {
+    const blocker = await blockingModalState(page).catch(() => null);
+    if (blocker) throw makeBackendUnavailable(`dictation service is blocked by ${blockerLabel(blocker)}`);
+    throw e;
+  }
 }
 async function submitAndScrape(page, timeoutMs = 40000, signal) {
   throwIfAborted(signal);
@@ -365,12 +466,14 @@ async function probe() {
   try {
     b = await chromium.connectOverCDP(CDP, { timeout: 4000 });
     const page = await normalizeServicePages(b.contexts()[0]);
+    const blocker = await blockingModalState(page);
     const st = await page.evaluate(() => {
       const txt = el => (el.innerText || el.textContent || '').trim();
       const loggedOut = [...document.querySelectorAll('button,a,[role="button"]')].some(e => /^log in$|^sign up for free$/i.test(txt(e)));
       const dict = !!document.querySelector('[aria-label="Start dictation"],[aria-label="Submit dictation"]');
       return { loggedOut, dict };
     });
+    if (blocker) return { browser: 'up', dictationService: 'blocked', blocker: blockerLabel(blocker) };
     return { browser: 'up', dictationService: st.loggedOut ? 'logged_out' : (st.dict ? 'ready' : 'loading') };
   } catch (_) {
     return { browser: 'down', dictationService: 'unreachable' };

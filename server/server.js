@@ -161,10 +161,15 @@ internetOk.lastOk = 0;
 // browser/dictationService come from a read-only probe; skipped while a transcription is in flight (don't disturb it).
 async function refreshHealth() {
   const busy = dictate.isBusy();
-  let browser = 'up', dictationService = 'ready';
-  if (!busy) { const p = await dictate.probe(); browser = p.browser; dictationService = p.dictationService; }
+  let browser = 'up', dictationService = 'ready', dictationServiceBlocker = null;
+  if (!busy) {
+    const p = await dictate.probe();
+    browser = p.browser;
+    dictationService = p.dictationService;
+    dictationServiceBlocker = p.blocker || null;
+  }
   const [mic, net] = await Promise.all([micOk(), internetOk()]);
-  _health = { ok: true, engine: ENGINE, browser, dictationService, mic: mic ? 'ok' : 'missing', internet: net ? 'ok' : 'down', busy, lastDictation: dictate.lastResult(), checkedAt: new Date().toISOString() };
+  _health = { ok: true, engine: ENGINE, browser, dictationService, ...(dictationServiceBlocker ? { dictationServiceBlocker } : {}), mic: mic ? 'ok' : 'missing', internet: net ? 'ok' : 'down', busy, lastDictation: dictate.lastResult(), checkedAt: new Date().toISOString() };
 }
 setInterval(() => refreshHealth().catch(() => {}), 20000);
 refreshHealth().catch(() => {});
