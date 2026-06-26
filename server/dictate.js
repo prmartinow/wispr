@@ -57,7 +57,7 @@ const STREAM_DRAIN_MODE = (process.env.STREAM_DRAIN_MODE || 'drain').toLowerCase
 const STREAM_DRAIN_MAX_MS = Number(process.env.STREAM_DRAIN_MAX_MS || 15000);
 const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 250);
 const STREAM_TAIL_MARGIN_MS = Number(process.env.STREAM_TAIL_MARGIN_MS || 200);
-const EMPTY_TRANSCRIPT_SETTLE_MS = Number(process.env.EMPTY_TRANSCRIPT_SETTLE_MS || 15000);
+const EMPTY_TRANSCRIPT_SETTLE_MS = Number(process.env.EMPTY_TRANSCRIPT_SETTLE_MS || 1200);
 const BYTES_PER_MS = 48000 * 2 / 1000; // 96 — s16le, mono, 48 kHz
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function makeAbortError() { const e = new Error('client disconnected'); e.code = 'client_closed'; return e; }
@@ -175,16 +175,29 @@ const dictationUIState = page => page.evaluate(() => {
     const r = el.getBoundingClientRect();
     return r.width > 1 && r.height > 1;
   };
-  const labels = [...document.querySelectorAll('[aria-label]')]
+  const controls = [...document.querySelectorAll('button[aria-label],[role="button"][aria-label]')]
     .filter(visible)
-    .map(el => el.getAttribute('aria-label') || '');
-  const has = re => labels.some(label => re.test(label));
+    .map(el => ({
+      label: el.getAttribute('aria-label') || '',
+      disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true'
+    }));
+  const hasEnabled = re => controls.some(c => re.test(c.label) && !c.disabled);
+  const hasAny = re => controls.some(c => re.test(c.label));
+  const hasDisabled = re => controls.some(c => re.test(c.label) && c.disabled);
   const c = document.querySelector('#prompt-textarea');
+  const submit = hasEnabled(/^Submit dictation$/i);
+  const cancel = hasEnabled(/^Cancel dictation$/i);
+  const transcribing = hasAny(/^Transcribing dictation$/i);
+  const cancelDisabled = hasDisabled(/^Cancel dictation$/i);
   return {
     text: c ? (c.innerText || c.textContent || '').trim() : '',
-    start: has(/^Start dictation$/i),
-    submit: has(/^Submit dictation$/i),
-    cancel: has(/^Cancel dictation$/i)
+    start: hasEnabled(/^Start dictation$/i),
+    submit,
+    cancel,
+    recording: submit && cancel,
+    transcribing,
+    cancelDisabled,
+    submitted: transcribing || cancelDisabled
   };
 });
 
@@ -243,7 +256,7 @@ async function blockingModalState(page) {
       if (visible(el)) return details('subscription_failure', el);
     }
 
-    const target = document.querySelector('[aria-label="Start dictation"],[aria-label="Submit dictation"]');
+    const target = document.querySelector('button[aria-label="Start dictation"],button[aria-label="Submit dictation"]');
     if (!visible(target)) return null;
     const r = target.getBoundingClientRect();
     const x = Math.max(0, Math.min(window.innerWidth - 1, r.left + r.width / 2));
@@ -300,9 +313,14 @@ async function clearComposer(page) {
 // self-heal: if a previous run left dictation active (e.g. client abandoned), cancel it, then clear.
 async function resetDictation(page, signal) {
   const st = await dictationUIState(page).catch(() => ({}));
-  if (st.cancel || st.submit) {
+  if (st.submitted) {
+    console.warn('[wispr-dictate] reset: dictation is already transcribing; waiting before next run');
+    await waitForUIState(page, s => !s.submitted, 30000, signal).catch(() => null);
+  }
+  const afterWait = await dictationUIState(page).catch(() => ({}));
+  if (afterWait.recording || afterWait.cancel || afterWait.submit) {
     console.warn('[wispr-dictate] reset: active dictation controls visible; cancelling before next run');
-    const clicked = await clickVisible(page, '[aria-label="Cancel dictation"]').catch(() => false);
+    const clicked = await clickVisible(page, 'button[aria-label="Cancel dictation"]').catch(() => false);
     if (!clicked) {
       try { await page.keyboard.press('Escape'); } catch (_) {}
     }
@@ -394,7 +412,7 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
   let submitted = false;
   let lastSubmitClick = 0;
   const clickSubmit = async (reason) => {
-    const clicked = await clickVisible(page, '[aria-label="Submit dictation"]', 3000).catch(() => false);
+    const clicked = await clickVisible(page, 'button[aria-label="Submit dictation"]', 3000).catch(() => false);
     if (clicked) {
       lastSubmitClick = Date.now();
       console.log(`[wispr-dictate] submit click (${reason})`);
@@ -409,7 +427,18 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
   while (Date.now() < deadline) {
     throwIfAborted(signal);
     const st = await dictationUIState(page);
-    if (st.submit || st.cancel) {
+    if (!submitted && st.submitted) {
+      submitted = true;
+      try { hooks.onSubmitted?.(); } catch (_) {}
+    }
+
+    if (st.submitted) {
+      doneSince = 0;
+      await abortableSleep(250, signal);
+      continue;
+    }
+
+    if (st.recording || st.submit || st.cancel) {
       doneSince = 0;
       if (st.submit && Date.now() - lastSubmitClick > 2000) await clickSubmit('still-recording');
       await abortableSleep(250, signal);
@@ -427,7 +456,7 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
     } else if (st.start) {
       doneSince ||= Date.now();
       if (!emptyWaitLogged) {
-        console.log(`[wispr-dictate] submit returned to idle with empty text; waiting up to ${EMPTY_TRANSCRIPT_SETTLE_MS}ms for late text`);
+        console.log(`[wispr-dictate] submitted UI returned to idle with empty text; debouncing ${EMPTY_TRANSCRIPT_SETTLE_MS}ms`);
         emptyWaitLogged = true;
       }
       if (Date.now() - doneSince >= EMPTY_TRANSCRIPT_SETTLE_MS) break;
@@ -564,7 +593,7 @@ async function probe() {
     const st = await page.evaluate(() => {
       const txt = el => (el.innerText || el.textContent || '').trim();
       const loggedOut = [...document.querySelectorAll('button,a,[role="button"]')].some(e => /^log in$|^sign up for free$/i.test(txt(e)));
-      const dict = !!document.querySelector('[aria-label="Start dictation"],[aria-label="Submit dictation"]');
+      const dict = !!document.querySelector('button[aria-label="Start dictation"],button[aria-label="Submit dictation"],button[aria-label="Transcribing dictation"]');
       return { loggedOut, dict };
     });
     if (blocker) return { browser: 'up', dictationService: 'blocked', blocker: blockerLabel(blocker) };
