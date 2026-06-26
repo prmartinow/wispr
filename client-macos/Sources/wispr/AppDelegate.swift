@@ -111,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preparingStream = nil
             startingRecording = false
             Log.log("record: app quit while preparing; cancelled stream setup")
-        } else if appState.phase == .transcribing {
+        } else if appState.phase == .finishing || appState.phase == .transcribing || appState.phase == .recovering {
             Log.log("transcribe: app quit while transcribing; relying on existing safety copy if this was a long take")
         }
         return .terminateNow
@@ -171,7 +171,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .idle:         (symbol, tint) = ("waveform", nil)
         case .preparing:    (symbol, tint) = ("antenna.radiowaves.left.and.right", .systemYellow)
         case .recording:    (symbol, tint) = ("mic.fill", .systemRed)
+        case .finishing:    (symbol, tint) = ("stopwatch", .systemYellow)
         case .transcribing: (symbol, tint) = ("waveform", .systemYellow)
+        case .recovering:   (symbol, tint) = ("arrow.triangle.2.circlepath", .systemYellow)
         case .inserted:     (symbol, tint) = ("checkmark.circle.fill", .systemGreen)
         case .copied:       (symbol, tint) = ("doc.on.clipboard.fill", .systemYellow)
         case .available:    (symbol, tint) = ("doc.text.fill", .systemYellow)
@@ -204,7 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cancelPreparing()
             return
         }
-        if appState.phase == .transcribing { return } // serialized server-side
+        if appState.phase == .finishing || appState.phase == .transcribing || appState.phase == .recovering { return } // serialized server-side
         if startingRecording { return }
         if appState.phase == .recording,
            settings.activation == .toggle,
@@ -415,7 +417,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        appState.phase = .transcribing
+        if let streamRef {
+            appState.phase = .finishing
+            streamRef.onServerStopping = { Log.log("stream: stop acknowledged; waiting for submit") }
+            streamRef.onServerSubmitting = { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self, self.appState.phase == .finishing else { return }
+                    self.appState.phase = .transcribing
+                }
+            }
+        } else {
+            appState.phase = .transcribing
+        }
         let t0 = Date()
         Log.log("transcribe: stop (\(pcm.count) bytes pcm, ~\(Int(appState.elapsed))s)")
         let safetyItem: PendingItem?
@@ -488,15 +501,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.log("stream: final in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
                 if !text.isEmpty { return .success(text) }
                 Log.log("stream: empty final — falling back to batch")
+                await MainActor.run { self.appState.phase = .recovering }
             } catch let e as StreamingClient.StreamError where e.isSemantic {
                 if case .server(let code, _) = e, code == "bad_request" || code == "max_duration" {
                     Log.log("stream: server error \(e.displayMessage) — falling back to batch")
+                    await MainActor.run { self.appState.phase = .recovering }
                 } else {
                     Log.log("stream: server error \(e.displayMessage) — not retrying via batch")
                     return .failure(WisprError.from(e))
                 }
             } catch {
                 Log.log("stream: transport failure — falling back to batch")
+                await MainActor.run { self.appState.phase = .recovering }
             }
         }
         guard !pcm.isEmpty else { return .failure(.noSpeech) }
@@ -661,7 +677,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Log.log("retry: recovered \(recovered.n) → History + last transcript")
                     self.appState.phase = .available
                     self.scheduleIdle(after: 4)
-                } else if self.appState.phase == .transcribing {
+                } else if self.appState.phase == .transcribing || self.appState.phase == .recovering {
                     self.appState.phase = restorePhase
                 }
             }

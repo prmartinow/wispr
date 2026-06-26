@@ -42,6 +42,8 @@ final class StreamingClient {
     private var settled = false
     private var finishRequested = false
     var onEarlyServerError: ((StreamError) -> Void)?
+    var onServerStopping: (() -> Void)?
+    var onServerSubmitting: (() -> Void)?
 
     // Hold frames until the server says `ready`, then flush — otherwise audio sent during the
     // server's start→ready window (dictation engaging) is dropped and the start is lost.
@@ -130,7 +132,14 @@ final class StreamingClient {
     /// Send `{stop}` and await the `{final}` transcript.
     func finish() async throws -> String {
         finishRequested = true
-        sendText(#"{"type":"stop"}"#)
+        do {
+            try await sendTextAwaitingDelivery(#"{"type":"stop"}"#)
+            Log.log("stream: stop frame delivered")
+        } catch {
+            task?.cancel(with: .goingAway, reason: nil)
+            task = nil
+            throw StreamError.transport(error)
+        }
         let timeout = DispatchWorkItem { [weak self] in
             self?.settle(.failure(StreamError.noFinal))
         }
@@ -157,6 +166,20 @@ final class StreamingClient {
 
     private func sendText(_ s: String) {
         task?.send(.string(s)) { err in if let err { Log.log("stream: text send error \(err.localizedDescription)") } }
+    }
+
+    private func sendTextAwaitingDelivery(_ s: String) async throws {
+        guard let task else { throw StreamError.cancelled }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            task.send(.string(s)) { err in
+                if let err {
+                    Log.log("stream: text send error \(err.localizedDescription)")
+                    cont.resume(throwing: err)
+                } else {
+                    cont.resume()
+                }
+            }
+        }
     }
 
     private func receiveLoop() {
@@ -192,6 +215,12 @@ final class StreamingClient {
             settleReady(.success(()))
         case "final":
             settle(.success(obj["text"] as? String ?? ""))
+        case "stopping":
+            Log.log("stream: server acknowledged stop")
+            onServerStopping?()
+        case "submitting":
+            Log.log("stream: server submitted dictation")
+            onServerSubmitting?()
         case "error":
             let code = obj["code"] as? String ?? "error"
             let message = obj["message"] as? String ?? ""

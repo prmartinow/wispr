@@ -57,6 +57,7 @@ const STREAM_DRAIN_MODE = (process.env.STREAM_DRAIN_MODE || 'drain').toLowerCase
 const STREAM_DRAIN_MAX_MS = Number(process.env.STREAM_DRAIN_MAX_MS || 15000);
 const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 250);
 const STREAM_TAIL_MARGIN_MS = Number(process.env.STREAM_TAIL_MARGIN_MS || 200);
+const EMPTY_TRANSCRIPT_SETTLE_MS = Number(process.env.EMPTY_TRANSCRIPT_SETTLE_MS || 8000);
 const BYTES_PER_MS = 48000 * 2 / 1000; // 96 — s16le, mono, 48 kHz
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function makeAbortError() { const e = new Error('client disconnected'); e.code = 'client_closed'; return e; }
@@ -355,6 +356,7 @@ async function submitAndScrape(page, timeoutMs = 40000, signal) {
   const deadline = Date.now() + timeoutMs;
   let text = '';
   let doneSince = 0;
+  let emptyWaitLogged = false;
   while (Date.now() < deadline) {
     throwIfAborted(signal);
     const st = await dictationUIState(page);
@@ -364,7 +366,13 @@ async function submitAndScrape(page, timeoutMs = 40000, signal) {
       doneSince = 0;
     } else if (st.start) {
       doneSince ||= Date.now();
-      if (Date.now() - doneSince >= 800) break;
+      if (!emptyWaitLogged) {
+        console.log(`[wispr-dictate] submit returned to idle with empty text; waiting up to ${EMPTY_TRANSCRIPT_SETTLE_MS}ms for late text`);
+        emptyWaitLogged = true;
+      }
+      if (Date.now() - doneSince >= EMPTY_TRANSCRIPT_SETTLE_MS) break;
+    } else {
+      doneSince = 0;
     }
     await abortableSleep(st.start ? 100 : 250, signal);
   }
@@ -391,16 +399,19 @@ async function transcribeFile(file, audio = {}, options = {}) {
   if (!lane) acquireNow();
   const durationMs = Number(audio.durationMs || 0);
   const t0 = Date.now();
+  const laneLabel = lane ? `lane=${lane.id}` : 'lane=0';
   const signal = options.signal;
   let page = null;
   try {
     throwIfAborted(signal);
     page = lane ? await getLanePage(lane) : await getPage();
+    console.log(`[wispr-dictate] batch ${laneLabel} start duration=${Math.round(durationMs)}ms`);
     await startDictation(page, signal);
     await playWavFile(file, durationMs, signal, lane ? lane.sink : SINK);
     await abortableSleep(1200, signal);
     const scrapeMs = Math.max(40000, Math.min(180000, Math.round(durationMs * 0.25) + 30000));
     const text = await submitAndScrape(page, scrapeMs, signal);
+    console.log(`[wispr-dictate] batch ${laneLabel} final text=${text ? text.length : 0} ms=${Date.now() - t0}`);
     recordResult(!!(text && text.length), Date.now() - t0, text ? undefined : 'empty transcript');
     return text;
   } catch (e) {
@@ -440,7 +451,7 @@ function pushAudio(s, buf) {
     }
   } catch (_) {}
 }
-async function stopStream(s) {
+async function stopStream(s, hooks = {}) {
   try {
     const drainStarted = Date.now();
     let mode, tailMs = 0, waitMs = 0;
@@ -467,6 +478,7 @@ async function stopStream(s) {
     // Brief settle so the streaming recognizer finalizes the just-rendered tail before Submit.
     if (STREAM_SUBMIT_SETTLE_MS > 0) await sleep(STREAM_SUBMIT_SETTLE_MS);
     const drainMs = Date.now() - drainStarted;
+    try { hooks.onSubmitting?.(); } catch (_) {}
     const text = await submitAndScrape(s.page);
     console.log(`[wispr-dictate] stream stop drain=${drainMs}ms mode=${mode} tail=${tailMs}ms text=${text ? text.length : 0}`);
     recordResult(!!(text && text.length), Date.now() - s.t0, text ? undefined : 'empty transcript');

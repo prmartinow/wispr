@@ -5,7 +5,9 @@ enum DictationPhase: Equatable {
     case idle
     case preparing
     case recording
+    case finishing
     case transcribing
+    case recovering
     case inserted
     case copied        // transcript on the clipboard; no editable field was focused (Scenario 1)
     case available     // transcript is in History/last-transcript but clipboard was not overwritten
@@ -33,7 +35,7 @@ final class AppState: ObservableObject {
 
     var isBusy: Bool {
         switch phase {
-        case .preparing, .recording, .transcribing: return true
+        case .preparing, .recording, .finishing, .transcribing, .recovering: return true
         default: return false
         }
     }

@@ -28,7 +28,7 @@ final class HoverHostView: NSView {
 }
 
 /// The persistent floating pill at bottom-center. Compact when idle; expands on hover (Start)
-/// and while preparing / recording (waveform + Stop) / transcribing.
+/// and while preparing / recording (waveform + Stop) / finishing / transcribing / recovering.
 final class HUDController {
     private let panel: HUDPanel
     private let appState: AppState
@@ -99,7 +99,9 @@ final class HUDController {
         case .idle:         return hovering ? NSSize(width: 222, height: 42) : NSSize(width: 72, height: 26)
         case .preparing:    return NSSize(width: 260, height: 46)
         case .recording:    return NSSize(width: 372, height: 54)
+        case .finishing:    return NSSize(width: 282, height: 46)
         case .transcribing: return NSSize(width: 240, height: 46)
+        case .recovering:   return NSSize(width: 292, height: 46)
         case .inserted, .copied, .available, .error: return NSSize(width: 300, height: 46)
         }
     }
@@ -165,10 +167,24 @@ struct HUDView: View {
                 Button(action: onStop) { Label("Stop", systemImage: "stop.fill") }
                     .buttonStyle(.borderedProminent).controlSize(.small).tint(.red)
             }
+        case .finishing:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("finishing recording…").font(.callout)
+                Spacer(minLength: 0)
+                Text(timeString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+            }
         case .transcribing:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
                 Text("transcribing…").font(.callout)
+                Spacer(minLength: 0)
+                Text(timeString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+            }
+        case .recovering:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("recovering transcript…").font(.callout)
                 Spacer(minLength: 0)
                 Text(timeString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
             }

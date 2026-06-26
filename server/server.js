@@ -478,8 +478,11 @@ function handleStream(ws, req) {
       try { if (startP) await startP; } catch (_) {}
       if (!session) { send({ type: 'error', code: 'bad_request', message: 'no active stream' }); try { ws.close(); } catch (_) {} return; }
       const s = session; session = null;
+      send({ type: 'stopping' });
       try {
-        const r = await dictate.stopStream(s);
+        const r = await dictate.stopStream(s, {
+          onSubmitting: () => send({ type: 'submitting' })
+        });
         send({ type: 'final', text: r.text, duration_ms: r.duration_ms });
         console.log(`[wispr-stream ${streamId}] final text=${r.text ? r.text.length : 0} duration=${r.duration_ms}ms`);
       }
