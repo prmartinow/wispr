@@ -53,12 +53,16 @@ function batchBusy() { return INTERNAL_LANES > 0 ? internalPoolFull() : _busy; }
 //   - STREAM_SUBMIT_SETTLE_MS : brief pause after the tail is rendered so the dictation service finalizes it.
 //   - STREAM_TAIL_MARGIN_MS   : ('bytes' mode) safety margin over the estimated tail.
 //   - STREAM_DRAIN_MAX_MS     : hard cap on the drain wait (safety net for a wedged pacat).
+//   - STREAM_END_SILENCE_MS   : real silence played into the mic before drain/Submit. Short live
+//     utterances can otherwise enter the service's transcribing state and complete with empty text.
 const STREAM_DRAIN_MODE = (process.env.STREAM_DRAIN_MODE || 'drain').toLowerCase();
 const STREAM_DRAIN_MAX_MS = Number(process.env.STREAM_DRAIN_MAX_MS || 15000);
 const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 250);
 const STREAM_TAIL_MARGIN_MS = Number(process.env.STREAM_TAIL_MARGIN_MS || 200);
+const STREAM_END_SILENCE_MS = Number(process.env.STREAM_END_SILENCE_MS || 1000);
 const EMPTY_TRANSCRIPT_SETTLE_MS = Number(process.env.EMPTY_TRANSCRIPT_SETTLE_MS || 1200);
 const BYTES_PER_MS = 48000 * 2 / 1000; // 96 — s16le, mono, 48 kHz
+const STREAM_END_SILENCE_CHUNK = Buffer.alloc(Math.round(BYTES_PER_MS * 20));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function makeAbortError() { const e = new Error('client disconnected'); e.code = 'client_closed'; return e; }
 function makeBackendUnavailable(message) { const e = new Error(message); e.code = 'backend_unavailable'; return e; }
@@ -540,9 +544,23 @@ function pushAudio(s, buf) {
     }
   } catch (_) {}
 }
+async function writeEndSilence(s, ms) {
+  const target = Math.max(0, Math.round(ms || 0));
+  if (!target || !s || !s.pacat || !s.pacat.stdin.writable) return 0;
+  const chunks = Math.ceil(target / 20);
+  for (let i = 0; i < chunks; i++) {
+    if (!s.pacat.stdin.writable) break;
+    if (!s.pacat.stdin.write(STREAM_END_SILENCE_CHUNK)) {
+      await new Promise(resolve => s.pacat.stdin.once('drain', resolve));
+    }
+    s.bytesWritten = (s.bytesWritten || 0) + STREAM_END_SILENCE_CHUNK.length;
+  }
+  return chunks * 20;
+}
 async function stopStream(s, hooks = {}) {
   try {
     const drainStarted = Date.now();
+    const endSilenceMs = await writeEndSilence(s, STREAM_END_SILENCE_MS);
     let mode, tailMs = 0, waitMs = 0;
     if (STREAM_DRAIN_MODE === 'bytes') {
       // Opt-in low-latency estimate: unplayed tail ~= audio_written - elapsed. Skips pacat's teardown
@@ -554,7 +572,7 @@ async function stopStream(s, hooks = {}) {
       waitMs = Math.min(STREAM_DRAIN_MAX_MS, tailMs + STREAM_TAIL_MARGIN_MS);
       try { s.pacat.stdin.end(); } catch (_) {}
       await sleep(waitMs);
-      console.log(`[wispr-dictate] drain est wrote=${Math.round(wroteMs)}ms played=${playedMs}ms tail=${tailMs}ms wait=${waitMs}ms bytes=${s.bytesWritten || 0}`);
+      console.log(`[wispr-dictate] drain est wrote=${Math.round(wroteMs)}ms played=${playedMs}ms tail=${tailMs}ms wait=${waitMs}ms silence=${endSilenceMs}ms bytes=${s.bytesWritten || 0}`);
     } else {
       // Default: EOF the pipe and wait for pacat's REAL drain-complete (pa_stream_drain on EOF ->
       // process close), i.e. until PulseAudio has actually rendered every buffered sample into the mic.
@@ -570,7 +588,7 @@ async function stopStream(s, hooks = {}) {
     const text = await submitAndScrape(s.page, 40000, undefined, {
       onSubmitted: hooks.onSubmitting
     });
-    console.log(`[wispr-dictate] stream stop drain=${drainMs}ms mode=${mode} tail=${tailMs}ms text=${text ? text.length : 0}`);
+    console.log(`[wispr-dictate] stream stop drain=${drainMs}ms mode=${mode} tail=${tailMs}ms silence=${endSilenceMs}ms text=${text ? text.length : 0}`);
     recordResult(!!(text && text.length), Date.now() - s.t0, text ? undefined : 'empty transcript');
     return { text, duration_ms: Date.now() - s.t0 };
   } catch (e) { recordResult(false, Date.now() - s.t0, e.message); throw e; }
