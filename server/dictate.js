@@ -554,6 +554,7 @@ async function writeEndSilence(s, ms) {
       await new Promise(resolve => s.pacat.stdin.once('drain', resolve));
     }
     s.bytesWritten = (s.bytesWritten || 0) + STREAM_END_SILENCE_CHUNK.length;
+    await sleep(20);
   }
   return chunks * 20;
 }
