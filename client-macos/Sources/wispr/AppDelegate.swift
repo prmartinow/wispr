@@ -486,7 +486,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let text = try await stream.finish()
                 Log.log("stream: final in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
-                return text.isEmpty ? .failure(.noSpeech) : .success(text)
+                if !text.isEmpty { return .success(text) }
+                Log.log("stream: empty final — falling back to batch")
             } catch let e as StreamingClient.StreamError where e.isSemantic {
                 if case .server(let code, _) = e, code == "bad_request" || code == "max_duration" {
                     Log.log("stream: server error \(e.displayMessage) — falling back to batch")
@@ -502,10 +503,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let text = try await client.transcribe(wav: WAV.fromPCM(pcm))
             Log.log("batch: OK in \(Int(Date().timeIntervalSince(t0) * 1000))ms → \(text.count) chars")
-            return text.isEmpty ? .failure(.noSpeech) : .success(text)
+            if !text.isEmpty { return .success(text) }
+            if pcmHasAudibleSignal(pcm) {
+                Log.log("batch: empty transcript despite audible local audio — keeping for retry")
+                return .failure(.transcriptionFailed)
+            }
+            return .failure(.noSpeech)
         } catch {
             return .failure(WisprError.from(error))
         }
+    }
+
+    private func pcmHasAudibleSignal(_ pcm: Data) -> Bool {
+        let sampleCount = pcm.count / 2
+        guard sampleCount > 0 else { return false }
+
+        let windowSamples = max(1, AudioStreamCapture.sampleRate / 2)
+        let activeRMS = 120.0
+        var totalSquares = 0.0
+        var windowSquares = 0.0
+        var windowCount = 0
+        var activeWindows = 0
+        var maxAbs = 0
+
+        func finishWindow() {
+            guard windowCount > 0 else { return }
+            let rms = sqrt(windowSquares / Double(windowCount))
+            if rms >= activeRMS { activeWindows += 1 }
+            windowSquares = 0
+            windowCount = 0
+        }
+
+        pcm.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var i = 0
+            while i + 1 < bytes.count {
+                let sample = Int16(bitPattern: UInt16(bytes[i]) | (UInt16(bytes[i + 1]) << 8))
+                let value = Int(sample)
+                let magnitude = value == Int(Int16.min) ? 32768 : Swift.abs(value)
+                maxAbs = max(maxAbs, magnitude)
+                let square = Double(value * value)
+                totalSquares += square
+                windowSquares += square
+                windowCount += 1
+                if windowCount >= windowSamples { finishWindow() }
+                i += 2
+            }
+        }
+        finishWindow()
+
+        let totalRMS = sqrt(totalSquares / Double(sampleCount))
+        return (activeWindows >= 2 && maxAbs >= 500) || (totalRMS >= activeRMS && maxAbs >= 700)
     }
 
     /// Paste, then confirm it landed. The target app/window/field was captured before
@@ -589,12 +637,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 do {
                     let text = try await self.client.transcribe(wav: wav)
+                    if text.isEmpty {
+                        Log.log("retry: empty transcript — keeping pending for later")
+                        break
+                    }
                     await MainActor.run {
-                        if !text.isEmpty {
-                            self.history.add(text)
-                            self.appState.lastTranscript = text
-                            recovered.n += 1
-                        }
+                        self.history.add(text)
+                        self.appState.lastTranscript = text
+                        recovered.n += 1
                         self.pending.remove(item)
                         self.appState.pendingCount = self.pending.count
                         self.refreshMenu()
