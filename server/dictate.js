@@ -25,6 +25,7 @@ const { chromium } = loadPlaywrightCore();
 
 const CDP = process.env.DICTATE_CDP || 'http://127.0.0.1:9223';
 const SINK = process.env.DICTATE_SINK || 'virtmic';
+const SOURCE = process.env.DICTATE_SOURCE || `${SINK}_in`;
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
 const BASE_CDP_PORT = Number(process.env.DICTATE_CDP_PORT || 9223);
 
@@ -60,6 +61,7 @@ const STREAM_DRAIN_MAX_MS = Number(process.env.STREAM_DRAIN_MAX_MS || 15000);
 const STREAM_SUBMIT_SETTLE_MS = Number(process.env.STREAM_SUBMIT_SETTLE_MS || 250);
 const STREAM_TAIL_MARGIN_MS = Number(process.env.STREAM_TAIL_MARGIN_MS || 200);
 const STREAM_END_SILENCE_MS = Number(process.env.STREAM_END_SILENCE_MS || 1000);
+const STREAM_SOURCE_WARMUP = !/^(0|false|no)$/i.test(process.env.STREAM_SOURCE_WARMUP || '1');
 const EMPTY_TRANSCRIPT_SETTLE_MS = Number(process.env.EMPTY_TRANSCRIPT_SETTLE_MS || 1200);
 const BYTES_PER_MS = 48000 * 2 / 1000; // 96 — s16le, mono, 48 kHz
 const STREAM_END_SILENCE_CHUNK = Buffer.alloc(Math.round(BYTES_PER_MS * 20));
@@ -385,6 +387,20 @@ const spawnPacat = () => spawn('pacat',
   ['--playback', '--raw', '--rate=48000', '--format=s16le', '--channels=1',
     '--latency-msec=20', '--process-time-msec=10', '--device=' + SINK],
   { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
+function spawnSourceWarmup(source = SOURCE) {
+  if (!STREAM_SOURCE_WARMUP) return null;
+  const p = spawn('parec',
+    ['--device=' + source, '--raw', '--rate=48000', '--format=s16le', '--channels=1'],
+    { env: { ...process.env, XDG_RUNTIME_DIR: XDG }, stdio: ['ignore', 'ignore', 'ignore'] });
+  p.on('error', e => console.warn(`[wispr-dictate] source warmup failed for ${source}: ${e.message || e}`));
+  return p;
+}
+function stopSourceWarmup(p) {
+  if (!p) return;
+  try { p.kill('SIGTERM'); } catch (_) {}
+  const t = setTimeout(() => { try { p.kill('SIGKILL'); } catch (_) {} }, 1000);
+  if (t.unref) t.unref();
+}
 
 async function startDictation(page, signal) {
   throwIfAborted(signal);
@@ -522,13 +538,16 @@ async function transcribeFile(file, audio = {}, options = {}) {
 async function startStream() {
   if (!tryAcquire()) { const e = new Error('busy'); e.code = 'busy'; throw e; }
   const t0 = Date.now();
+  let sourceWarmup = null;
   try {
     const page = await getPage();
+    sourceWarmup = spawnSourceWarmup(SOURCE);
     await startDictation(page);
     const pacat = spawnPacat();
     pacat.on('error', () => {});
-    return { page, pacat, t0: Date.now(), bytesWritten: 0, firstAudioAt: 0 };
+    return { page, pacat, sourceWarmup, t0: Date.now(), bytesWritten: 0, firstAudioAt: 0 };
   } catch (e) {
+    stopSourceWarmup(sourceWarmup);
     recordResult(false, Date.now() - t0, `stream start failed: ${e.message}`);
     console.warn(`[wispr-dictate] stream start failed: ${e.stack || e.message}`);
     release();
@@ -593,10 +612,11 @@ async function stopStream(s, hooks = {}) {
     recordResult(!!(text && text.length), Date.now() - s.t0, text ? undefined : 'empty transcript');
     return { text, duration_ms: Date.now() - s.t0 };
   } catch (e) { recordResult(false, Date.now() - s.t0, e.message); throw e; }
-  finally { try { s.pacat.kill(); } catch (_) {} release(); }
+  finally { try { s.pacat.kill(); } catch (_) {} stopSourceWarmup(s.sourceWarmup); release(); }
 }
 async function abortStream(s) {
   try { s.pacat.kill(); } catch (_) {}
+  stopSourceWarmup(s.sourceWarmup);
   try { await resetDictation(s.page); } catch (_) {}
   release();
 }
