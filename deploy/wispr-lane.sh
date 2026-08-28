@@ -39,4 +39,4 @@ exec "$CHROME" \
   --no-restore-session-state \
   --use-fake-ui-for-media-stream \
   --window-position="${X},${Y}" --window-size=470,530 \
-  about:blank
+  "${DICTATION_SERVICE_URL:-https://chatgpt.com/}"
