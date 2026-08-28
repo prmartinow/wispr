@@ -540,6 +540,9 @@ const httpServer = http.createServer(handleRequest);
 attachUpgrade(httpServer);
 httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
   console.log(`[wispr-server] engine=${ENGINE} HTTP listening on ${HTTP_HOST}:${HTTP_PORT}`);
+  if (typeof dictate.warmupLanes === 'function') {
+    dictate.warmupLanes().catch(e => console.warn(`[wispr-server] warmup error: ${e.message}`));
+  }
 });
 
 const lanTlsOptions = loadLanTlsOptions();

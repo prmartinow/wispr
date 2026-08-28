@@ -660,7 +660,18 @@ async function probe() {
   } finally { try { await b.close(); } catch (_) {} }
 }
 
-module.exports = { transcribe, transcribeFile, startStream, pushAudio, stopStream, abortStream, probe, isBusy, batchBusy, lastResult };
+async function warmupLanes() {
+  const tasks = [];
+  tasks.push(getPage().catch(e => console.warn(`[wispr-dictate] warmup failed for main lane: ${e.message}`)));
+  for (const lane of _lanes) {
+    tasks.push(getLanePage(lane).catch(e => console.warn(`[wispr-dictate] warmup failed for lane ${lane.id}: ${e.message}`)));
+  }
+  const res = await Promise.allSettled(tasks);
+  const ok = res.filter(r => r.status === 'fulfilled').length;
+  console.log(`[wispr-dictate] pre-warmed ${ok}/${tasks.length} lane(s)`);
+}
+
+module.exports = { transcribe, transcribeFile, startStream, pushAudio, stopStream, abortStream, probe, isBusy, batchBusy, lastResult, warmupLanes };
 
 if (require.main === module) {
   const wav = process.argv[2];
