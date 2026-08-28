@@ -24,6 +24,7 @@ WISPR_LANE_PROFILE_ROOT="${WISPR_LANE_PROFILE_ROOT:-$WISPR_PROFILE_ROOT/lanes}"
 PROFILE="$WISPR_LANE_PROFILE_ROOT/$k"
 PORT=$(( 9223 + k ))
 mkdir -p "$PROFILE"
+sanitize_wispr_profile_clean_exit "$PROFILE"
 
 # Tile in a 4-wide grid of 480x540 cells (470x530 windows + small gap) on the 1920x1080 display.
 # Cell 0 is the frontend (lane 0); internal lanes take cells 1..N.
@@ -34,6 +35,8 @@ exec "$CHROME" \
   --user-data-dir="$PROFILE" \
   --remote-debugging-address=127.0.0.1 --remote-debugging-port="$PORT" \
   --no-first-run --no-default-browser-check --disable-dev-shm-usage \
+  --disable-session-crashed-bubble --hide-crash-restore-bubble --disable-infobars \
+  --no-restore-session-state \
   --use-fake-ui-for-media-stream \
   --window-position="${X},${Y}" --window-size=470,530 \
   about:blank

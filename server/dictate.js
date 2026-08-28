@@ -10,16 +10,26 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 function loadPlaywrightCore() {
-  const mod = process.env.WISPR_PLAYWRIGHT_CORE_PATH || 'playwright-core';
-  try {
-    return require(mod);
-  } catch (e) {
-    const hint = process.env.WISPR_PLAYWRIGHT_CORE_PATH
-      ? `WISPR_PLAYWRIGHT_CORE_PATH=${process.env.WISPR_PLAYWRIGHT_CORE_PATH}`
-      : 'install playwright-core or set WISPR_PLAYWRIGHT_CORE_PATH';
-    e.message = `failed to load playwright-core (${hint}): ${e.message}`;
-    throw e;
+  const candidates = [];
+  if (process.env.WISPR_PLAYWRIGHT_CORE_PATH) {
+    candidates.push({ mod: process.env.WISPR_PLAYWRIGHT_CORE_PATH, source: 'WISPR_PLAYWRIGHT_CORE_PATH' });
   }
+  if (process.env.WISPR_PLAYWRIGHT_PACKAGE) {
+    candidates.push({ mod: process.env.WISPR_PLAYWRIGHT_PACKAGE, source: 'WISPR_PLAYWRIGHT_PACKAGE' });
+  }
+  candidates.push({ mod: 'rebrowser-playwright-core', source: 'default' });
+  candidates.push({ mod: 'playwright-core', source: 'fallback' });
+
+  const errors = [];
+  for (const candidate of candidates) {
+    try {
+      return require(candidate.mod);
+    } catch (e) {
+      errors.push(`${candidate.source}=${candidate.mod}: ${e.message}`);
+    }
+  }
+
+  throw new Error(`failed to load Rebrowser/Playwright CDP driver (${errors.join('; ')})`);
 }
 const { chromium } = loadPlaywrightCore();
 
@@ -134,6 +144,14 @@ async function normalizeServicePages(ctx, preferred = null) {
 
   const blankPages = ctx.pages().filter(p => p !== page && isBlankPage(p));
   await Promise.all(blankPages.map(p => p.close().catch(() => {})));
+
+  if (page && !page._wisprDialogAttached) {
+    page._wisprDialogAttached = true;
+    page.on('dialog', dialog => {
+      console.warn(`[wispr-dictate] auto-dismissing unexpected page dialog: ${dialog.type()} "${dialog.message()}"`);
+      dialog.dismiss().catch(() => {});
+    });
+  }
   return page;
 }
 

@@ -24,9 +24,20 @@ resolve_wispr_chrome() {
   )
 
   candidate="$(node -e '
-const mod = process.env.WISPR_PLAYWRIGHT_CORE_PATH || "playwright-core";
-const p = require(mod);
-console.log(p.chromium.executablePath());
+const candidates = [
+  process.env.WISPR_PLAYWRIGHT_CORE_PATH,
+  process.env.WISPR_PLAYWRIGHT_PACKAGE,
+  "rebrowser-playwright-core",
+  "playwright-core",
+].filter(Boolean);
+for (const mod of candidates) {
+  try {
+    const p = require(mod);
+    console.log(p.chromium.executablePath());
+    process.exit(0);
+  } catch (_) {}
+}
+process.exit(1);
 ' 2>/dev/null || true)"
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then
     printf '%s\n' "$candidate"
@@ -58,4 +69,30 @@ configure_wispr_chrome_env() {
   fi
 
   echo "wispr: using Chromium at $CHROME" >&2
+}
+
+sanitize_wispr_profile_clean_exit() {
+  local prof="${1:-}"
+  [ -n "$prof" ] || return 0
+  local pref="$prof/Default/Preferences"
+  if [ -f "$pref" ]; then
+    python3 -c "
+import json, sys
+pref_path = sys.argv[1]
+try:
+    with open(pref_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    changed = False
+    if 'profile' in data and isinstance(data['profile'], dict):
+        if data['profile'].get('exit_type') != 'Normal' or data['profile'].get('exited_cleanly') is not True:
+            data['profile']['exit_type'] = 'Normal'
+            data['profile']['exited_cleanly'] = True
+            changed = True
+    if changed:
+        with open(pref_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+except Exception:
+    pass
+" "$pref" 2>/dev/null || true
+  fi
 }
