@@ -365,7 +365,13 @@ function playWavFile(file, durationMs = 0, signal, sink = SINK) {
     if (signal && signal.aborted) { reject(makeAbortError()); return; }
     const p = spawn('paplay', ['--device=' + sink, file], { env: { ...process.env, XDG_RUNTIME_DIR: XDG }, detached: true });
     let settled = false;
-    let err = ''; p.stderr.on('data', d => (err += d));
+    let err = '';
+    if (p.stderr) {
+      p.stderr.on('data', d => (err += d));
+      p.stderr.on('error', () => {});
+    }
+    if (p.stdin) p.stdin.on('error', () => {});
+    if (p.stdout) p.stdout.on('error', () => {});
     const timeoutMs = Math.max(15000, Math.min(700000, Number(durationMs || 0) + 15000));
     let timer = null;
     let killTimer = null;
@@ -401,10 +407,17 @@ function playWavFile(file, durationMs = 0, signal, sink = SINK) {
     });
   });
 }
-const spawnPacat = () => spawn('pacat',
-  ['--playback', '--raw', '--rate=48000', '--format=s16le', '--channels=1',
-    '--latency-msec=20', '--process-time-msec=10', '--device=' + SINK],
-  { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
+const spawnPacat = () => {
+  const p = spawn('pacat',
+    ['--playback', '--raw', '--rate=48000', '--format=s16le', '--channels=1',
+      '--latency-msec=20', '--process-time-msec=10', '--device=' + SINK],
+    { env: { ...process.env, XDG_RUNTIME_DIR: XDG } });
+  p.on('error', e => console.warn(`[wispr-dictate] pacat process error: ${e.message || e}`));
+  if (p.stdin) p.stdin.on('error', () => {});
+  if (p.stdout) p.stdout.on('error', () => {});
+  if (p.stderr) p.stderr.on('error', () => {});
+  return p;
+};
 function spawnSourceWarmup(source = SOURCE) {
   if (!STREAM_SOURCE_WARMUP) return null;
   const p = spawn('parec',
@@ -574,7 +587,7 @@ async function startStream() {
 }
 function pushAudio(s, buf) {
   try {
-    if (s && s.pacat && s.pacat.stdin.writable) {
+    if (s && s.pacat && s.pacat.stdin && s.pacat.stdin.writable) {
       s.pacat.stdin.write(buf);
       if (!s.firstAudioAt) s.firstAudioAt = Date.now();
       s.bytesWritten = (s.bytesWritten || 0) + buf.length; // total audio handed to pacat (will be played)
@@ -583,14 +596,21 @@ function pushAudio(s, buf) {
 }
 async function writeEndSilence(s, ms) {
   const target = Math.max(0, Math.round(ms || 0));
-  if (!target || !s || !s.pacat || !s.pacat.stdin.writable) return 0;
+  if (!target || !s || !s.pacat || !s.pacat.stdin || !s.pacat.stdin.writable) return 0;
   const chunks = Math.ceil(target / 20);
   for (let i = 0; i < chunks; i++) {
-    if (!s.pacat.stdin.writable) break;
-    if (!s.pacat.stdin.write(STREAM_END_SILENCE_CHUNK)) {
-      await new Promise(resolve => s.pacat.stdin.once('drain', resolve));
+    if (!s.pacat.stdin || !s.pacat.stdin.writable) break;
+    try {
+      if (!s.pacat.stdin.write(STREAM_END_SILENCE_CHUNK)) {
+        await new Promise(resolve => {
+          s.pacat.stdin.once('drain', resolve);
+          s.pacat.stdin.once('error', resolve);
+        });
+      }
+      s.bytesWritten = (s.bytesWritten || 0) + STREAM_END_SILENCE_CHUNK.length;
+    } catch (_) {
+      break;
     }
-    s.bytesWritten = (s.bytesWritten || 0) + STREAM_END_SILENCE_CHUNK.length;
     await sleep(20);
   }
   return chunks * 20;
