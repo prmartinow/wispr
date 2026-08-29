@@ -30,6 +30,35 @@ enum AudioDevices {
             UInt32(MemoryLayout<AudioDeviceID>.size), &id)
     }
 
+    static func defaultInputDeviceID() -> AudioDeviceID? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var deviceID: AudioDeviceID = 0
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &deviceID) == noErr,
+              deviceID != 0 else { return nil }
+        return deviceID
+    }
+
+    static func setInputVolume(percent: Float = 89.0) {
+        guard let deviceID = defaultInputDeviceID() else { return }
+        var vol: Float32 = max(0.0, min(1.0, percent / 100.0))
+        for element in [kAudioObjectPropertyElementMain, 1, 2] {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: UInt32(element))
+            if AudioObjectHasProperty(deviceID, &addr) {
+                var settable: DarwinBoolean = false
+                if AudioObjectIsPropertySettable(deviceID, &addr, &settable) == noErr && settable.boolValue {
+                    AudioObjectSetPropertyData(deviceID, &addr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
+                }
+            }
+        }
+    }
+
     private static func deviceID(forUID uid: String) -> AudioDeviceID? {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,

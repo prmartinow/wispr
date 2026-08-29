@@ -26,6 +26,7 @@ final class AudioStreamCapture {
 
     func start(inputUID: String?) throws {
         if let uid = inputUID, !uid.isEmpty { AudioDevices.setDefaultInput(uid: uid) }
+        AudioDevices.setInputVolume(percent: 89.0)
         pcm.removeAll(keepingCapacity: false)
         limitReached = false
         startedAt = Date()
