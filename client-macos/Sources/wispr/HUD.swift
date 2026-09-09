@@ -26,7 +26,7 @@ final class HoverHostView: NSView {
     override func mouseEntered(with event: NSEvent) { onHover?(true) }
     override func mouseExited(with event: NSEvent) { onHover?(false) }
     override func mouseDown(with event: NSEvent) {
-        window?.performWindowDrag(with: event)
+        window?.performDrag(with: event)
     }
 }
 
@@ -37,7 +37,7 @@ struct WindowDragRepresentable: NSViewRepresentable {
 
     final class DragView: NSView {
         override func mouseDown(with event: NSEvent) {
-            window?.performWindowDrag(with: event)
+            window?.performDrag(with: event)
         }
     }
 }
