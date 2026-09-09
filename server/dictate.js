@@ -295,8 +295,24 @@ async function blockingModalState(page) {
 }
 
 async function dismissBlockingModal(page) {
-  const before = await blockingModalState(page);
+  let before = await blockingModalState(page);
   if (!before) return null;
+
+  // Tier 1: Primary self-healing — trigger page reload to flush transient promotional/announcement overlays
+  try {
+    console.log(`[wispr-dictate] attempting primary recovery (reload) for ${blockerLabel(before)}`);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 8000 });
+    await sleep(2500);
+    before = await blockingModalState(page);
+    if (!before) {
+      console.log('[wispr-dictate] primary recovery (reload) successfully unblocked dictation');
+      return null;
+    }
+  } catch (e) {
+    console.warn(`[wispr-dictate] reload recovery failed or timed out: ${e.message}`);
+  }
+
+  // Tier 2: Fallback recovery — targeted modal close selectors and keyboard escape
   const closeSelectors = [
     '#modal-subscription-failure button[aria-label="Close"]',
     '[data-testid="modal-subscription-failure"] button[aria-label="Close"]',
