@@ -306,7 +306,16 @@ async function dismissBlockingModal(page) {
     '[data-testid="modal-subscription-failure"] button:has-text("Close")',
     '#modal-subscription-failure button:has-text("Not now")',
     '[data-testid="modal-subscription-failure"] button:has-text("Not now")',
-    'button[aria-label="Close"]'
+    '[role="dialog"] [data-testid="close-button"]',
+    '[role="dialog"] button[aria-label="Close"]',
+    '[role="dialog"] [role="button"][aria-label="Close"]',
+    '[role="dialog"] button:has-text("Close")',
+    '[role="dialog"] button:has-text("Dismiss")',
+    '[role="dialog"] button:has-text("Not now")',
+    '[role="dialog"] button:has-text("Done")',
+    '[data-testid="close-button"]',
+    'button[aria-label="Close"]',
+    'button[aria-label^="Dismiss "]'
   ];
   for (const sel of closeSelectors) {
     try {
@@ -666,7 +675,11 @@ async function probe() {
   try {
     b = await chromium.connectOverCDP(CDP, { timeout: 4000 });
     const page = await normalizeServicePages(b.contexts()[0]);
-    const blocker = await blockingModalState(page);
+    let blocker = await blockingModalState(page);
+    if (blocker) {
+      console.warn(`[wispr-dictate] probe: auto-dismissing ${blockerLabel(blocker)}`);
+      blocker = await dismissBlockingModal(page);
+    }
     const st = await page.evaluate(() => {
       const txt = el => (el.innerText || el.textContent || '').trim();
       const loggedOut = [...document.querySelectorAll('button,a,[role="button"]')].some(e => /^log in$|^sign up for free$/i.test(txt(e)));
@@ -682,9 +695,17 @@ async function probe() {
 
 async function warmupLanes() {
   const tasks = [];
-  tasks.push(getPage().catch(e => console.warn(`[wispr-dictate] warmup failed for main lane: ${e.message}`)));
+  const warmLane = async (fn) => {
+    const p = await fn();
+    if (p) {
+      const b = await blockingModalState(p).catch(() => null);
+      if (b) await dismissBlockingModal(p).catch(() => null);
+    }
+    return p;
+  };
+  tasks.push(warmLane(getPage).catch(e => console.warn(`[wispr-dictate] warmup failed for main lane: ${e.message}`)));
   for (const lane of _lanes) {
-    tasks.push(getLanePage(lane).catch(e => console.warn(`[wispr-dictate] warmup failed for lane ${lane.id}: ${e.message}`)));
+    tasks.push(warmLane(() => getLanePage(lane)).catch(e => console.warn(`[wispr-dictate] warmup failed for lane ${lane.id}: ${e.message}`)));
   }
   const res = await Promise.allSettled(tasks);
   const ok = res.filter(r => r.status === 'fulfilled').length;
