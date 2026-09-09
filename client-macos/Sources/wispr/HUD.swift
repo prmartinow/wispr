@@ -76,16 +76,6 @@ final class HUDController {
 
     init(state: AppState, onStart: @escaping () -> Void, onStop: @escaping () -> Void, onCancel: @escaping () -> Void) {
         appState = state
-        let hosting = NSHostingView(rootView: HUDView(state: state,
-                                                      onStart: onStart,
-                                                      onStop: onStop,
-                                                      onCancel: onCancel,
-                                                      onReset: { [weak self] in self?.resetToDefault(animated: true) }))
-        hosting.autoresizingMask = [.width, .height]
-        hosting.frame = container.bounds
-        container.addSubview(hosting)
-        container.onDoubleClick = { [weak self] in self?.resetToDefault(animated: true) }
-
         panel = HUDPanel(contentRect: NSRect(x: 0, y: 0, width: 130, height: 30),
                          styleMask: [.borderless, .nonactivatingPanel],
                          backing: .buffered, defer: true)
@@ -101,6 +91,16 @@ final class HUDController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         userCenter = Self.loadSavedPosition()
+
+        let hosting = NSHostingView(rootView: HUDView(state: state,
+                                                      onStart: onStart,
+                                                      onStop: onStop,
+                                                      onCancel: onCancel,
+                                                      onReset: { [weak self] in self?.resetToDefault(animated: true) }))
+        hosting.autoresizingMask = [.width, .height]
+        hosting.frame = container.bounds
+        container.addSubview(hosting)
+        container.onDoubleClick = { [weak self] in self?.resetToDefault(animated: true) }
 
         Publishers.CombineLatest(state.$phase, state.$hudHovering)
             .receive(on: RunLoop.main)
