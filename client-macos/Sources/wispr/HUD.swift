@@ -13,6 +13,7 @@ final class HUDPanel: NSPanel {
 /// (SwiftUI `.onHover` won't fire there). Resizes are handled by the controller.
 final class HoverHostView: NSView {
     var onHover: ((Bool) -> Void)?
+    var onDoubleClick: (() -> Void)?
     private var tracking: NSTrackingArea?
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -26,17 +27,33 @@ final class HoverHostView: NSView {
     override func mouseEntered(with event: NSEvent) { onHover?(true) }
     override func mouseExited(with event: NSEvent) { onHover?(false) }
     override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onDoubleClick?()
+            return
+        }
         window?.performDrag(with: event)
     }
 }
 
-/// Background helper view that forwards mouse-down drag events to the AppKit window server
+/// Background helper view that forwards mouse-down drag events and double-clicks to reset
 struct WindowDragRepresentable: NSViewRepresentable {
-    func makeNSView(context: Context) -> DragView { DragView() }
-    func updateNSView(_ nsView: DragView, context: Context) {}
+    var onDoubleClick: (() -> Void)?
+    func makeNSView(context: Context) -> DragView {
+        let v = DragView()
+        v.onDoubleClick = onDoubleClick
+        return v
+    }
+    func updateNSView(_ nsView: DragView, context: Context) {
+        nsView.onDoubleClick = onDoubleClick
+    }
 
     final class DragView: NSView {
+        var onDoubleClick: (() -> Void)?
         override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 {
+                onDoubleClick?()
+                return
+            }
             window?.performDrag(with: event)
         }
     }
@@ -55,13 +72,19 @@ final class HUDController {
     private static let posYKey = "wispr.hud.centerY"
     private var userCenter: NSPoint?
     private var isProgrammaticLayout = false
+    private var snapWork: DispatchWorkItem?
 
     init(state: AppState, onStart: @escaping () -> Void, onStop: @escaping () -> Void, onCancel: @escaping () -> Void) {
         appState = state
-        let hosting = NSHostingView(rootView: HUDView(state: state, onStart: onStart, onStop: onStop, onCancel: onCancel))
+        let hosting = NSHostingView(rootView: HUDView(state: state,
+                                                      onStart: onStart,
+                                                      onStop: onStop,
+                                                      onCancel: onCancel,
+                                                      onReset: { [weak self] in self?.resetToDefault(animated: true) }))
         hosting.autoresizingMask = [.width, .height]
         hosting.frame = container.bounds
         container.addSubview(hosting)
+        container.onDoubleClick = { [weak self] in self?.resetToDefault(animated: true) }
 
         panel = HUDPanel(contentRect: NSRect(x: 0, y: 0, width: 130, height: 30),
                          styleMask: [.borderless, .nonactivatingPanel],
@@ -86,13 +109,7 @@ final class HUDController {
 
         NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: panel)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self, !self.isProgrammaticLayout else { return }
-                let frame = self.panel.frame
-                let center = NSPoint(x: frame.midX, y: frame.midY)
-                self.userCenter = center
-                Self.savePosition(center)
-            }
+            .sink { [weak self] _ in self?.handleWindowMoved() }
             .store(in: &cancellables)
 
         // Route hover through a small debounce so the resize doesn't flicker at the edge.
@@ -123,6 +140,71 @@ final class HUDController {
         let d = UserDefaults.standard
         d.set(Double(center.x), forKey: posXKey)
         d.set(Double(center.y), forKey: posYKey)
+    }
+
+    private static func clearSavedPosition() {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: posXKey)
+        d.removeObject(forKey: posYKey)
+    }
+
+    private func defaultCenter(for size: NSSize) -> NSPoint {
+        guard let screen = panel.screen ?? NSScreen.main else { return .zero }
+        let vf = screen.visibleFrame
+        return NSPoint(x: vf.midX, y: vf.minY + 18 + size.height / 2)
+    }
+
+    private func handleWindowMoved() {
+        guard !isProgrammaticLayout else { return }
+        snapWork?.cancel()
+
+        let frame = panel.frame
+        let currentCenter = NSPoint(x: frame.midX, y: frame.midY)
+        let defCenter = defaultCenter(for: frame.size)
+
+        // Magnetic snap threshold: within 60pt horizontally and 45pt vertically of default bottom-center
+        let dx = abs(currentCenter.x - defCenter.x)
+        let dy = abs(currentCenter.y - defCenter.y)
+        let inSnapZone = dx < 60 && dy < 45
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.isProgrammaticLayout else { return }
+            if inSnapZone {
+                self.resetToDefault(animated: true)
+            } else {
+                self.userCenter = currentCenter
+                Self.savePosition(currentCenter)
+            }
+        }
+        snapWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    func resetToDefault(animated: Bool = true) {
+        userCenter = nil
+        Self.clearSavedPosition()
+        let size = Self.size(phase: appState.phase, hovering: appState.hudHovering)
+        guard let screen = panel.screen ?? NSScreen.main else { return }
+        let vf = screen.visibleFrame
+        let origin = NSPoint(x: vf.midX - size.width / 2, y: vf.minY + 18)
+        let rect = NSRect(origin: origin, size: size)
+
+        isProgrammaticLayout = true
+        defer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.isProgrammaticLayout = false
+            }
+        }
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.20
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().setFrame(rect, display: true)
+            }
+        } else {
+            panel.setFrame(rect, display: true)
+        }
     }
 
     private func layout(phase: DictationPhase, hovering: Bool) {
@@ -180,6 +262,7 @@ struct HUDView: View {
     var onStart: () -> Void
     var onStop: () -> Void
     var onCancel: () -> Void
+    var onReset: () -> Void
     @State private var bars: [CGFloat] = Array(repeating: 0.06, count: 32)
 
     private var compact: Bool { state.phase == .idle && !state.hudExpanded }
@@ -188,7 +271,7 @@ struct HUDView: View {
         content
             .padding(.horizontal, compact ? 9 : 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(WindowDragRepresentable())
+            .background(WindowDragRepresentable(onDoubleClick: onReset))
             .background(.ultraThinMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.08)))
             .onChange(of: state.level) { v in bars.removeFirst(); bars.append(max(0.06, v)) }
@@ -216,7 +299,7 @@ struct HUDView: View {
                     }
                 }
                 .contentShape(Rectangle())
-                .overlay(WindowDragRepresentable())
+                .overlay(WindowDragRepresentable(onDoubleClick: onReset))
             }
         case .preparing:
             HStack(spacing: 10) {
