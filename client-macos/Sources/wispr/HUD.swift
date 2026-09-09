@@ -25,6 +25,21 @@ final class HoverHostView: NSView {
     }
     override func mouseEntered(with event: NSEvent) { onHover?(true) }
     override func mouseExited(with event: NSEvent) { onHover?(false) }
+    override func mouseDown(with event: NSEvent) {
+        window?.performWindowDrag(with: event)
+    }
+}
+
+/// Background helper view that forwards mouse-down drag events to the AppKit window server
+struct WindowDragRepresentable: NSViewRepresentable {
+    func makeNSView(context: Context) -> DragView { DragView() }
+    func updateNSView(_ nsView: DragView, context: Context) {}
+
+    final class DragView: NSView {
+        override func mouseDown(with event: NSEvent) {
+            window?.performWindowDrag(with: event)
+        }
+    }
 }
 
 /// The persistent floating pill at bottom-center. Compact when idle; expands on hover (Start)
@@ -36,6 +51,10 @@ final class HUDController {
     private var cancellables = Set<AnyCancellable>()
     private var didLayout = false
     private var collapseWork: DispatchWorkItem?
+    private static let posXKey = "wispr.hud.centerX"
+    private static let posYKey = "wispr.hud.centerY"
+    private var userCenter: NSPoint?
+    private var isProgrammaticLayout = false
 
     init(state: AppState, onStart: @escaping () -> Void, onStop: @escaping () -> Void, onCancel: @escaping () -> Void) {
         appState = state
@@ -54,11 +73,26 @@ final class HUDController {
         panel.level = .floating
         panel.ignoresMouseEvents = false
         panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.isMovable = true
+        panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        userCenter = Self.loadSavedPosition()
 
         Publishers.CombineLatest(state.$phase, state.$hudHovering)
             .receive(on: RunLoop.main)
             .sink { [weak self] phase, hovering in self?.layout(phase: phase, hovering: hovering) }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: panel)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, !self.isProgrammaticLayout else { return }
+                let frame = self.panel.frame
+                let center = NSPoint(x: frame.midX, y: frame.midY)
+                self.userCenter = center
+                Self.savePosition(center)
+            }
             .store(in: &cancellables)
 
         // Route hover through a small debounce so the resize doesn't flicker at the edge.
@@ -79,12 +113,46 @@ final class HUDController {
         }
     }
 
+    private static func loadSavedPosition() -> NSPoint? {
+        let d = UserDefaults.standard
+        guard d.object(forKey: posXKey) != nil, d.object(forKey: posYKey) != nil else { return nil }
+        return NSPoint(x: d.double(forKey: posXKey), y: d.double(forKey: posYKey))
+    }
+
+    private static func savePosition(_ center: NSPoint) {
+        let d = UserDefaults.standard
+        d.set(Double(center.x), forKey: posXKey)
+        d.set(Double(center.y), forKey: posYKey)
+    }
+
     private func layout(phase: DictationPhase, hovering: Bool) {
         let size = Self.size(phase: phase, hovering: hovering)
-        guard let screen = NSScreen.main else { return }
+        guard let screen = panel.screen ?? NSScreen.main else { return }
         let vf = screen.visibleFrame
-        let origin = NSPoint(x: vf.midX - size.width / 2, y: vf.minY + 18)
+
+        let targetCenter: NSPoint
+        if let center = userCenter {
+            let minX = vf.minX + size.width / 2
+            let maxX = vf.maxX - size.width / 2
+            let minY = vf.minY + size.height / 2
+            let maxY = vf.maxY - size.height / 2
+            let clampedX = minX < maxX ? max(minX, min(maxX, center.x)) : vf.midX
+            let clampedY = minY < maxY ? max(minY, min(maxY, center.y)) : vf.minY + 18 + size.height / 2
+            targetCenter = NSPoint(x: clampedX, y: clampedY)
+        } else {
+            targetCenter = NSPoint(x: vf.midX, y: vf.minY + 18 + size.height / 2)
+        }
+
+        let origin = NSPoint(x: targetCenter.x - size.width / 2, y: targetCenter.y - size.height / 2)
         let rect = NSRect(origin: origin, size: size)
+
+        isProgrammaticLayout = true
+        defer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.isProgrammaticLayout = false
+            }
+        }
+
         guard didLayout else { panel.setFrame(rect, display: true); didLayout = true; return }
         // Animate the magnify so it's smooth (not a jump).
         NSAnimationContext.runAnimationGroup { ctx in
@@ -120,6 +188,7 @@ struct HUDView: View {
         content
             .padding(.horizontal, compact ? 9 : 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(WindowDragRepresentable())
             .background(.ultraThinMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.08)))
             .onChange(of: state.level) { v in bars.removeFirst(); bars.append(max(0.06, v)) }
@@ -146,6 +215,8 @@ struct HUDView: View {
                             .foregroundStyle(.orange.opacity(0.85))
                     }
                 }
+                .contentShape(Rectangle())
+                .overlay(WindowDragRepresentable())
             }
         case .preparing:
             HStack(spacing: 10) {
