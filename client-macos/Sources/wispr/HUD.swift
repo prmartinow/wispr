@@ -74,7 +74,12 @@ final class HUDController {
     private var isProgrammaticLayout = false
     private var snapWork: DispatchWorkItem?
 
-    init(state: AppState, onStart: @escaping () -> Void, onStop: @escaping () -> Void, onCancel: @escaping () -> Void) {
+    init(state: AppState,
+         onStart: @escaping () -> Void,
+         onStop: @escaping () -> Void,
+         onCancel: @escaping () -> Void,
+         onRetryPending: (() -> Void)? = nil,
+         onDiscardPending: (() -> Void)? = nil) {
         appState = state
         panel = HUDPanel(contentRect: NSRect(x: 0, y: 0, width: 130, height: 30),
                          styleMask: [.borderless, .nonactivatingPanel],
@@ -96,7 +101,9 @@ final class HUDController {
                                                       onStart: onStart,
                                                       onStop: onStop,
                                                       onCancel: onCancel,
-                                                      onReset: { [weak self] in self?.resetToDefault(animated: true) }))
+                                                      onReset: { [weak self] in self?.resetToDefault(animated: true) },
+                                                      onRetryPending: onRetryPending,
+                                                      onDiscardPending: onDiscardPending))
         hosting.autoresizingMask = [.width, .height]
         hosting.frame = container.bounds
         container.addSubview(hosting)
@@ -246,7 +253,7 @@ final class HUDController {
 
     private static func size(phase: DictationPhase, hovering: Bool) -> NSSize {
         switch phase {
-        case .idle:         return hovering ? NSSize(width: 222, height: 42) : NSSize(width: 72, height: 26)
+        case .idle:         return hovering ? NSSize(width: 270, height: 42) : NSSize(width: 72, height: 26)
         case .preparing:    return NSSize(width: 260, height: 46)
         case .recording:    return NSSize(width: 372, height: 54)
         case .finishing:    return NSSize(width: 282, height: 46)
@@ -263,6 +270,8 @@ struct HUDView: View {
     var onStop: () -> Void
     var onCancel: () -> Void
     var onReset: () -> Void
+    var onRetryPending: (() -> Void)? = nil
+    var onDiscardPending: (() -> Void)? = nil
     @State private var bars: [CGFloat] = Array(repeating: 0.06, count: 32)
 
     private var compact: Bool { state.phase == .idle && !state.hudExpanded }
@@ -281,10 +290,24 @@ struct HUDView: View {
         switch state.phase {
         case .idle:
             if state.hudExpanded {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     statusDot
                     Button(action: onStart) { Label("Start", systemImage: "mic.fill") }
                         .buttonStyle(.borderedProminent).controlSize(.small)
+                    if state.pendingCount > 0 {
+                        Button(action: { onRetryPending?() }) {
+                            Label("\(state.pendingCount)", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .tint(.orange)
+                        .help("Retry \(state.pendingCount) pending recording(s)")
+
+                        Button(action: { onDiscardPending?() }) {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .help("Discard pending recording(s)")
+                    }
                     Spacer(minLength: 0)
                     Text(state.serverStatus.label).font(.caption2).foregroundStyle(.secondary)
                 }

@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toggleItem: NSMenuItem!
     private var serverStatusItem: NSMenuItem!
     private var pendingItem: NSMenuItem!
+    private var discardPendingItem: NSMenuItem!
     private var pasteLastItem: NSMenuItem!
     private var hud: HUDController!
     private var hotKey: HotKeyManager!
@@ -45,7 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud = HUDController(state: appState,
                             onStart: { [weak self] in self?.startRecording() },
                             onStop: { [weak self] in self?.stopAndTranscribe() },
-                            onCancel: { [weak self] in self?.cancelRecording() })
+                            onCancel: { [weak self] in self?.cancelRecording() },
+                            onRetryPending: { [weak self] in self?.retryPendingAction() },
+                            onDiscardPending: { [weak self] in self?.discardPendingAction() })
         setupStatusItem()
         appState.pendingCount = pending.count
 
@@ -136,6 +139,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingItem = NSMenuItem(title: "Retry pending", action: #selector(retryPendingAction), keyEquivalent: "")
         pendingItem.isHidden = true
         menu.addItem(pendingItem)
+        discardPendingItem = NSMenuItem(title: "Discard pending", action: #selector(discardPendingAction), keyEquivalent: "")
+        discardPendingItem.isHidden = true
+        menu.addItem(discardPendingItem)
         pasteLastItem = NSMenuItem(title: "Copy Last Transcript", action: #selector(copyLastAction), keyEquivalent: "")
         pasteLastItem.isHidden = true
         menu.addItem(pasteLastItem)
@@ -161,6 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let n = appState.pendingCount
         pendingItem.isHidden = n == 0
         pendingItem.title = "Retry \(n) pending recording\(n == 1 ? "" : "s")"
+        discardPendingItem.isHidden = n == 0
+        discardPendingItem.title = n == 1 ? "Discard Pending Recording" : "Discard All \(n) Pending Recordings"
         pasteLastItem.isHidden = appState.lastTranscript.isEmpty
     }
 
@@ -190,6 +198,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleFromMenu() { toggle() }
     @objc private func revealLog() { NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL]) }
     @objc private func retryPendingAction() { health.check(); retryPending(auto: false) }
+    @objc private func discardPendingAction() {
+        pending.discardAll()
+        appState.pendingCount = pending.count
+        refreshMenu()
+        Log.log("pending: discarded all pending recordings")
+    }
     @objc private func copyLastAction() {
         guard !appState.lastTranscript.isEmpty else { return }
         TextInserter.copy(appState.lastTranscript)
@@ -654,8 +668,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do {
                     let text = try await self.client.transcribe(wav: wav)
                     if text.isEmpty {
-                        Log.log("retry: empty transcript — keeping pending for later")
-                        break
+                        Log.log("retry: empty transcript — moving to discarded-no-speech")
+                        await MainActor.run {
+                            _ = self.pending.discardNoSpeech(item)
+                            self.appState.pendingCount = self.pending.count
+                            self.refreshMenu()
+                        }
+                        continue
                     }
                     await MainActor.run {
                         self.history.add(text)
