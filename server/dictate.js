@@ -47,9 +47,30 @@ const BASE_CDP_PORT = Number(process.env.DICTATE_CDP_PORT || 9223);
 const INTERNAL_LANES = Math.max(0, Number(process.env.WISPR_LANES || 0));
 const _lanes = [];
 for (let k = 1; k <= INTERNAL_LANES; k++) {
-  _lanes.push({ id: k, cdp: `http://127.0.0.1:${BASE_CDP_PORT + k}`, sink: `virtmic${k}`, browser: null, page: null, busy: false });
+  _lanes.push({
+    id: k,
+    cdp: `http://127.0.0.1:${BASE_CDP_PORT + k}`,
+    sink: `virtmic${k}`,
+    browser: null,
+    page: null,
+    busy: false,
+    unhealthyUntil: 0,
+    consecutiveFailures: 0
+  });
 }
-function acquireLane() { const l = _lanes.find(x => !x.busy); if (l) { l.busy = true; } return l || null; }
+function acquireLane() {
+  const now = Date.now();
+  let l = _lanes.find(x => !x.busy && (x.unhealthyUntil || 0) <= now);
+  if (!l) {
+    const available = _lanes.filter(x => !x.busy);
+    if (available.length) {
+      available.sort((a, b) => (a.unhealthyUntil || 0) - (b.unhealthyUntil || 0));
+      l = available[0];
+    }
+  }
+  if (l) { l.busy = true; }
+  return l || null;
+}
 function internalPoolFull() { return _lanes.length > 0 && _lanes.every(l => l.busy); }
 // Whether a *batch* (/transcribe) request would be rejected right now: all internal lanes busy, or —
 // with no lanes provisioned — the single lane-0 backend is busy. Streaming uses isBusy() (lane 0).
@@ -201,19 +222,28 @@ const COMPOSER_SELECTORS = [
   '#prompt-textarea'
 ];
 
-function composerLocator(page) {
-  return page.locator(COMPOSER_SELECTORS.join(',')).first();
+async function findComposer(page) {
+  for (const selector of COMPOSER_SELECTORS) {
+    const candidates = page.locator(selector);
+    const count = await candidates.count().catch(() => 0);
+    for (let i = 0; i < count; i++) {
+      const candidate = candidates.nth(i);
+      if (await candidate.isVisible().catch(() => false)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
 }
 
 const composerText = page => page.evaluate(() => {
   const el = document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"]') ||
              document.querySelector('.ProseMirror[role="textbox"][contenteditable="true"]') ||
-             document.querySelector('#prompt-textarea') ||
-             [...document.querySelectorAll('[role="textbox"]')].find(e => e.isContentEditable);
-  if (!el) return '';
+             document.querySelector('#prompt-textarea');
+  if (!el) return null;
   if ('value' in el && typeof el.value === 'string') return el.value.trim();
   return (el.innerText || el.textContent || '').trim();
-}).catch(() => '');
+}).catch(() => null);
 
 const dictationUIState = page => page.evaluate(() => {
   const visible = el => {
@@ -261,8 +291,7 @@ const dictationUIState = page => page.evaluate(() => {
     recording: finish && cancel,
     active: cancel || finish || transcribeAndSend,
     cancelDisabled,
-    submitted: transcribing || cancelDisabled,
-    submit: finish
+    submitted: transcribing || cancelDisabled
   };
 });
 
@@ -418,21 +447,21 @@ async function ensureDictationUnblocked(page) {
 }
 
 async function clearComposer(page) {
+  const composer = await findComposer(page);
+  if (!composer) return false;
   try {
-    const composer = composerLocator(page);
-    if (await composer.count()) {
-      await composer.clear({ timeout: 3000 }).catch(() => {});
-    }
+    await composer.clear({ timeout: 3000 }).catch(() => {});
   } catch (_) {}
   const text = await composerText(page);
-  if (!text) return true;
+  if (text === '') return true;
+  if (text === null) return false;
   try {
-    const composer = composerLocator(page);
     await composer.click({ timeout: 2000 });
     await page.keyboard.press('ControlOrMeta+A');
     await page.keyboard.press('Backspace');
   } catch (_) {}
-  return !(await composerText(page));
+  const textAfter = await composerText(page);
+  return textAfter === '';
 }
 
 // self-heal: if a previous run left dictation active (e.g. client abandoned), cancel it, then clear.
@@ -451,7 +480,10 @@ async function resetDictation(page, signal) {
     }
     await waitForUIState(page, s => !s.cancel && !s.finish, 5000, signal).catch(() => null);
   }
-  await clearComposer(page);
+  const cleared = await clearComposer(page);
+  if (!cleared) {
+    throw makeBackendUnavailable('Composer is missing or could not be cleared');
+  }
 }
 
 // --- audio injectors --------------------------------------------------------
@@ -553,7 +585,11 @@ async function startDictation(page, signal) {
   throwIfAborted(signal);
   try {
     const st = await waitForUIState(page, s => s.recording, 8000, signal);
-    if (!st.recording && !st.finish && !st.cancel) throw new Error('dictation controls did not enter recording state');
+    if (!st?.recording) {
+      throw makeBackendUnavailable(
+        `Safe recording state not established (finish=${!!st?.finish}, cancel=${!!st?.cancel}, transcribeAndSend=${!!st?.transcribeAndSend})`
+      );
+    }
   } catch (e) {
     const blocker = await blockingModalState(page).catch(() => null);
     if (blocker) throw makeBackendUnavailable(`Dictation service is blocked by ${blockerLabel(blocker)}`);
@@ -572,7 +608,10 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
     }
     return clicked;
   };
-  await clickFinish('initial');
+  const clickedInitial = await clickFinish('initial');
+  if (!clickedInitial) {
+    throw makeBackendUnavailable('Safe dictation finish control disappeared before finalization');
+  }
   const deadline = Date.now() + timeoutMs;
   let text = '';
   let doneSince = 0;
@@ -618,9 +657,12 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
     }
     await abortableSleep(st.start ? 100 : 250, signal);
   }
-  if (!text) text = await composerText(page);
-  await clearComposer(page);
-  return text;
+  if (!text) {
+    const raw = await composerText(page);
+    if (typeof raw === 'string') text = raw;
+  }
+  await clearComposer(page).catch(() => {});
+  return text || '';
 }
 
 // --- batch mode -------------------------------------------------------------
@@ -655,12 +697,22 @@ async function transcribeFile(file, audio = {}, options = {}) {
     const text = await submitAndScrape(page, scrapeMs, signal);
     console.log(`[wispr-dictate] batch ${laneLabel} final text=${text ? text.length : 0} ms=${Date.now() - t0}`);
     recordResult(!!(text && text.length), Date.now() - t0, text ? undefined : 'empty transcript');
+    if (lane) {
+      lane.consecutiveFailures = 0;
+      lane.unhealthyUntil = 0;
+    }
     return text;
   } catch (e) {
     if (page && (e.code === 'client_closed' || (signal && signal.aborted))) {
       try { await resetDictation(page); } catch (_) {}
     }
     recordResult(false, Date.now() - t0, e.message);
+    if (lane && e.code !== 'client_closed' && !(signal && signal.aborted)) {
+      lane.consecutiveFailures = (lane.consecutiveFailures || 0) + 1;
+      const quarantineSec = Math.min(30, 5 * lane.consecutiveFailures);
+      lane.unhealthyUntil = Date.now() + quarantineSec * 1000;
+      console.warn(`[wispr-dictate] lane=${lane.id} quarantined for ${quarantineSec}s (failures=${lane.consecutiveFailures}): ${e.message}`);
+    }
     throw e;
   } finally {
     if (lane) lane.busy = false; else release();
@@ -777,7 +829,7 @@ async function probe() {
       const txt = el => (el.innerText || el.textContent || '').trim();
       const loggedOut = [...document.querySelectorAll('button,a,[role="button"]')].some(e => /^log in$|^sign up for free$/i.test(txt(e)));
       const dict = !!document.querySelector('button[aria-label="Dictate"],button[aria-label="Start dictation"],button[aria-label="Stop dictation"],button[aria-label="Submit dictation"],button[aria-label="Transcribing dictation"]');
-      const composer = !!document.querySelector('[role="textbox"],#prompt-textarea');
+      const composer = !!document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"],.ProseMirror[role="textbox"][contenteditable="true"],#prompt-textarea');
       return { loggedOut, dict, composer };
     }).catch(() => ({}));
     if (blocker) return { browser: 'up', dictationService: 'blocked', blocker: blockerLabel(blocker) };

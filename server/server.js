@@ -538,21 +538,32 @@ function loadLanTlsOptions() {
 
 const httpServer = http.createServer(handleRequest);
 attachUpgrade(httpServer);
-httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
-  console.log(`[wispr-server] engine=${ENGINE} HTTP listening on ${HTTP_HOST}:${HTTP_PORT}`);
-  if (typeof dictate.warmupLanes === 'function') {
-    dictate.warmupLanes().catch(e => console.warn(`[wispr-server] warmup error: ${e.message}`));
-  }
-});
 
 const lanTlsOptions = loadLanTlsOptions();
-if (lanTlsOptions) {
-  const httpsServer = https.createServer(lanTlsOptions, handleRequest);
+const httpsServer = lanTlsOptions ? https.createServer(lanTlsOptions, handleRequest) : null;
+if (httpsServer) {
   httpsServer.on('tlsClientError', (err, socket) => {
     console.warn(`[wispr-server] LAN TLS client error remote=${socket.remoteAddress || '?'} code=${err.code || '?'} message=${err.message || err}`);
   });
   attachUpgrade(httpsServer);
-  httpsServer.listen(HTTPS_PORT, HTTPS_HOST, () => {
-    console.log(`[wispr-server] engine=${ENGINE} LAN mTLS listening on ${HTTPS_HOST}:${HTTPS_PORT}`);
-  });
 }
+
+async function start() {
+  if (typeof dictate.warmupLanes === 'function') {
+    try {
+      await dictate.warmupLanes();
+    } catch (e) {
+      console.warn(`[wispr-server] warmup error: ${e.message}`);
+    }
+  }
+  httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
+    console.log(`[wispr-server] engine=${ENGINE} HTTP listening on ${HTTP_HOST}:${HTTP_PORT}`);
+  });
+  if (httpsServer) {
+    httpsServer.listen(HTTPS_PORT, HTTPS_HOST, () => {
+      console.log(`[wispr-server] engine=${ENGINE} LAN mTLS listening on ${HTTPS_HOST}:${HTTPS_PORT}`);
+    });
+  }
+}
+
+start();
