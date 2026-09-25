@@ -58,23 +58,21 @@ for (let k = 1; k <= INTERNAL_LANES; k++) {
     consecutiveFailures: 0
   });
 }
+function hasHealthyFreeLane() {
+  const now = Date.now();
+  return _lanes.some(l => !l.busy && (l.unhealthyUntil || 0) <= now);
+}
+
 function acquireLane() {
   const now = Date.now();
-  let l = _lanes.find(x => !x.busy && (x.unhealthyUntil || 0) <= now);
-  if (!l) {
-    const available = _lanes.filter(x => !x.busy);
-    if (available.length) {
-      available.sort((a, b) => (a.unhealthyUntil || 0) - (b.unhealthyUntil || 0));
-      l = available[0];
-    }
-  }
-  if (l) { l.busy = true; }
-  return l || null;
+  const lane = _lanes.find(x => !x.busy && (x.unhealthyUntil || 0) <= now);
+  if (lane) { lane.busy = true; }
+  return lane || null;
 }
-function internalPoolFull() { return _lanes.length > 0 && _lanes.every(l => l.busy); }
-// Whether a *batch* (/transcribe) request would be rejected right now: all internal lanes busy, or —
+function internalPoolFull() { return !hasHealthyFreeLane(); }
+// Whether a *batch* (/transcribe) request would be rejected right now: all internal lanes busy/quarantined, or —
 // with no lanes provisioned — the single lane-0 backend is busy. Streaming uses isBusy() (lane 0).
-function batchBusy() { return INTERNAL_LANES > 0 ? internalPoolFull() : _busy; }
+function batchBusy() { return INTERNAL_LANES > 0 ? !hasHealthyFreeLane() : _busy; }
 // Stop drain (see COORDINATION 2026-06-08/09). On Stop we must let the unplayed tail actually render
 // into the mic before clicking Submit, or the last words are cropped.
 //   - default 'drain' mode: close pacat's stdin and wait for its REAL drain-complete (pa_stream_drain
@@ -236,14 +234,19 @@ async function findComposer(page) {
   return null;
 }
 
-const composerText = page => page.evaluate(() => {
-  const el = document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"]') ||
-             document.querySelector('.ProseMirror[role="textbox"][contenteditable="true"]') ||
-             document.querySelector('#prompt-textarea');
-  if (!el) return null;
-  if ('value' in el && typeof el.value === 'string') return el.value.trim();
-  return (el.innerText || el.textContent || '').trim();
-}).catch(() => null);
+async function readComposerText(composer) {
+  if (!composer) return null;
+  return composer.evaluate(el => {
+    if (!el) return null;
+    if ('value' in el && typeof el.value === 'string') return el.value.trim();
+    return (el.innerText || el.textContent || '').trim();
+  }).catch(() => null);
+}
+
+const composerText = async page => {
+  const c = await findComposer(page);
+  return readComposerText(c);
+};
 
 const dictationUIState = page => page.evaluate(() => {
   const visible = el => {
@@ -272,8 +275,7 @@ const dictationUIState = page => page.evaluate(() => {
 
   const composerEl = document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"]') ||
                      document.querySelector('.ProseMirror[role="textbox"][contenteditable="true"]') ||
-                     document.querySelector('#prompt-textarea') ||
-                     [...document.querySelectorAll('[role="textbox"]')].find(e => e.isContentEditable);
+                     document.querySelector('#prompt-textarea');
   let text = '';
   if (composerEl) {
     text = ('value' in composerEl && typeof composerEl.value === 'string')
@@ -452,7 +454,7 @@ async function clearComposer(page) {
   try {
     await composer.clear({ timeout: 3000 }).catch(() => {});
   } catch (_) {}
-  const text = await composerText(page);
+  const text = await readComposerText(composer);
   if (text === '') return true;
   if (text === null) return false;
   try {
@@ -460,7 +462,7 @@ async function clearComposer(page) {
     await page.keyboard.press('ControlOrMeta+A');
     await page.keyboard.press('Backspace');
   } catch (_) {}
-  const textAfter = await composerText(page);
+  const textAfter = await readComposerText(composer);
   return textAfter === '';
 }
 
@@ -843,20 +845,27 @@ async function probe() {
 
 async function warmupLanes() {
   const tasks = [];
-  const warmLane = async (fn) => {
+  const warmLane = async (fn, label) => {
     const p = await fn();
     if (p) {
       const b = await blockingModalState(p).catch(() => null);
       if (b) await dismissBlockingModal(p).catch(() => null);
     }
-    return p;
+    return label;
   };
-  tasks.push(warmLane(getPage).catch(e => console.warn(`[wispr-dictate] warmup failed for main lane: ${e.message}`)));
+  tasks.push(warmLane(getPage, 'main'));
   for (const lane of _lanes) {
-    tasks.push(warmLane(() => getLanePage(lane)).catch(e => console.warn(`[wispr-dictate] warmup failed for lane ${lane.id}: ${e.message}`)));
+    tasks.push(warmLane(() => getLanePage(lane), `lane-${lane.id}`));
   }
-  const res = await Promise.allSettled(tasks);
-  const ok = res.filter(r => r.status === 'fulfilled').length;
+  const results = await Promise.allSettled(tasks);
+  let ok = 0;
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      ok++;
+    } else {
+      console.warn(`[wispr-dictate] warmup failed: ${r.reason?.message || r.reason}`);
+    }
+  }
   console.log(`[wispr-dictate] pre-warmed ${ok}/${tasks.length} lane(s)`);
 }
 
