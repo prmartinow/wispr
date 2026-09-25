@@ -187,10 +187,34 @@ async function getLanePage(lane) {
   return lane.page;
 }
 
+const DICTATION_LABELS = {
+  start: /^(?:Start dictation|Dictate)$/i,
+  finish: /^(?:Submit dictation|Stop dictation)$/i,
+  cancel: /^Cancel dictation$/i,
+  transcribeAndSend: /^Transcribe and send$/i, // NEVER click in Wispr
+  transcribing: /^Transcribing dictation$/i
+};
+
+const COMPOSER_SELECTORS = [
+  '[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"]',
+  '.ProseMirror[role="textbox"][contenteditable="true"]',
+  '#prompt-textarea'
+];
+
+function composerLocator(page) {
+  return page.locator(COMPOSER_SELECTORS.join(',')).first();
+}
+
 const composerText = page => page.evaluate(() => {
-  const c = document.querySelector('#prompt-textarea');
-  return c ? (c.innerText || c.textContent || '').trim() : '';
-});
+  const el = document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"]') ||
+             document.querySelector('.ProseMirror[role="textbox"][contenteditable="true"]') ||
+             document.querySelector('#prompt-textarea') ||
+             [...document.querySelectorAll('[role="textbox"]')].find(e => e.isContentEditable);
+  if (!el) return '';
+  if ('value' in el && typeof el.value === 'string') return el.value.trim();
+  return (el.innerText || el.textContent || '').trim();
+}).catch(() => '');
+
 const dictationUIState = page => page.evaluate(() => {
   const visible = el => {
     if (!el) return false;
@@ -208,22 +232,57 @@ const dictationUIState = page => page.evaluate(() => {
   const hasEnabled = re => controls.some(c => re.test(c.label) && !c.disabled);
   const hasAny = re => controls.some(c => re.test(c.label));
   const hasDisabled = re => controls.some(c => re.test(c.label) && c.disabled);
-  const c = document.querySelector('#prompt-textarea');
-  const submit = hasEnabled(/^Submit dictation$/i);
+
+  const start = hasEnabled(/^(?:Start dictation|Dictate)$/i);
+  const finish = hasEnabled(/^(?:Submit dictation|Stop dictation)$/i);
   const cancel = hasEnabled(/^Cancel dictation$/i);
+  const transcribeAndSend = hasEnabled(/^Transcribe and send$/i);
   const transcribing = hasAny(/^Transcribing dictation$/i);
   const cancelDisabled = hasDisabled(/^Cancel dictation$/i);
+
+  const composerEl = document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"]') ||
+                     document.querySelector('.ProseMirror[role="textbox"][contenteditable="true"]') ||
+                     document.querySelector('#prompt-textarea') ||
+                     [...document.querySelectorAll('[role="textbox"]')].find(e => e.isContentEditable);
+  let text = '';
+  if (composerEl) {
+    text = ('value' in composerEl && typeof composerEl.value === 'string')
+      ? composerEl.value.trim()
+      : (composerEl.innerText || composerEl.textContent || '').trim();
+  }
+
   return {
-    text: c ? (c.innerText || c.textContent || '').trim() : '',
-    start: hasEnabled(/^Start dictation$/i),
-    submit,
+    text,
+    start,
+    finish,
     cancel,
-    recording: submit && cancel,
+    transcribeAndSend,
     transcribing,
+    recording: finish && cancel,
+    active: cancel || finish || transcribeAndSend,
     cancelDisabled,
-    submitted: transcribing || cancelDisabled
+    submitted: transcribing || cancelDisabled,
+    submit: finish
   };
 });
+
+async function clickDictationControl(page, kind, timeout = 4000) {
+  const re = DICTATION_LABELS[kind];
+  if (!re) throw new Error(`Unknown dictation control kind: ${kind}`);
+  if (kind === 'transcribeAndSend') throw new Error('Wispr is forbidden from clicking transcribeAndSend');
+
+  const controls = page.locator('button[aria-label], [role="button"][aria-label]');
+  const count = await controls.count();
+  for (let i = 0; i < count; i++) {
+    const el = controls.nth(i);
+    const label = await el.getAttribute('aria-label');
+    if (label && re.test(label) && await el.isVisible()) {
+      await el.click({ timeout });
+      return true;
+    }
+  }
+  return false;
+}
 
 async function waitForUIState(page, predicate, timeoutMs, signal, intervalMs = 100) {
   const deadline = Date.now() + timeoutMs;
@@ -280,7 +339,9 @@ async function blockingModalState(page) {
       if (visible(el)) return details('subscription_failure', el);
     }
 
-    const target = document.querySelector('button[aria-label="Start dictation"],button[aria-label="Submit dictation"]');
+    const target = document.querySelector('button[aria-label="Dictate"],button[aria-label="Start dictation"],button[aria-label="Stop dictation"],button[aria-label="Submit dictation"]') ||
+                   document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"]') ||
+                   document.querySelector('#prompt-textarea');
     if (!visible(target)) return null;
     const r = target.getBoundingClientRect();
     const x = Math.max(0, Math.min(window.innerWidth - 1, r.left + r.width / 2));
@@ -357,8 +418,23 @@ async function ensureDictationUnblocked(page) {
 }
 
 async function clearComposer(page) {
-  try { await page.click('#prompt-textarea', { timeout: 4000 }); await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace'); } catch (_) {}
+  try {
+    const composer = composerLocator(page);
+    if (await composer.count()) {
+      await composer.clear({ timeout: 3000 }).catch(() => {});
+    }
+  } catch (_) {}
+  const text = await composerText(page);
+  if (!text) return true;
+  try {
+    const composer = composerLocator(page);
+    await composer.click({ timeout: 2000 });
+    await page.keyboard.press('ControlOrMeta+A');
+    await page.keyboard.press('Backspace');
+  } catch (_) {}
+  return !(await composerText(page));
 }
+
 // self-heal: if a previous run left dictation active (e.g. client abandoned), cancel it, then clear.
 async function resetDictation(page, signal) {
   const st = await dictationUIState(page).catch(() => ({}));
@@ -367,13 +443,13 @@ async function resetDictation(page, signal) {
     await waitForUIState(page, s => !s.submitted, 30000, signal).catch(() => null);
   }
   const afterWait = await dictationUIState(page).catch(() => ({}));
-  if (afterWait.recording || afterWait.cancel || afterWait.submit) {
+  if (afterWait.recording || afterWait.cancel || afterWait.finish || afterWait.active) {
     console.warn('[wispr-dictate] reset: active dictation controls visible; cancelling before next run');
-    const clicked = await clickVisible(page, 'button[aria-label="Cancel dictation"]').catch(() => false);
+    const clicked = await clickDictationControl(page, 'cancel', 2000).catch(() => false);
     if (!clicked) {
       try { await page.keyboard.press('Escape'); } catch (_) {}
     }
-    await waitForUIState(page, s => !s.cancel && !s.submit, 5000, signal).catch(() => null);
+    await waitForUIState(page, s => !s.cancel && !s.finish, 5000, signal).catch(() => null);
   }
   await clearComposer(page);
 }
@@ -467,7 +543,8 @@ async function startDictation(page, signal) {
   try {
     const st = await waitForUIState(page, s => s.start, 5000, signal);
     if (!st.start) throw new Error('Start dictation control not visible');
-    await page.locator('[aria-label="Start dictation"]:visible').first().click({ timeout: 5000 });
+    const clicked = await clickDictationControl(page, 'start', 5000);
+    if (!clicked) throw new Error('Failed to click start dictation control');
   } catch (e) {
     const blocker = await blockingModalState(page).catch(() => null);
     if (blocker) throw makeBackendUnavailable(`Dictation service is blocked by ${blockerLabel(blocker)}`);
@@ -475,8 +552,8 @@ async function startDictation(page, signal) {
   }
   throwIfAborted(signal);
   try {
-    const st = await waitForUIState(page, s => s.submit || s.cancel, 8000, signal);
-    if (!st.submit && !st.cancel) throw new Error('dictation controls did not enter recording state');
+    const st = await waitForUIState(page, s => s.recording, 8000, signal);
+    if (!st.recording && !st.finish && !st.cancel) throw new Error('dictation controls did not enter recording state');
   } catch (e) {
     const blocker = await blockingModalState(page).catch(() => null);
     if (blocker) throw makeBackendUnavailable(`Dictation service is blocked by ${blockerLabel(blocker)}`);
@@ -486,16 +563,16 @@ async function startDictation(page, signal) {
 async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
   throwIfAborted(signal);
   let submitted = false;
-  let lastSubmitClick = 0;
-  const clickSubmit = async (reason) => {
-    const clicked = await clickVisible(page, 'button[aria-label="Submit dictation"]', 3000).catch(() => false);
+  let lastFinishClick = 0;
+  const clickFinish = async (reason) => {
+    const clicked = await clickDictationControl(page, 'finish', 3000).catch(() => false);
     if (clicked) {
-      lastSubmitClick = Date.now();
-      console.log(`[wispr-dictate] submit click (${reason})`);
+      lastFinishClick = Date.now();
+      console.log(`[wispr-dictate] finish click (${reason})`);
     }
     return clicked;
   };
-  await clickSubmit('initial');
+  await clickFinish('initial');
   const deadline = Date.now() + timeoutMs;
   let text = '';
   let doneSince = 0;
@@ -514,9 +591,9 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
       continue;
     }
 
-    if (st.recording || st.submit || st.cancel) {
+    if (st.recording || st.finish || st.cancel) {
       doneSince = 0;
-      if (st.submit && Date.now() - lastSubmitClick > 2000) await clickSubmit('still-recording');
+      if (st.finish && Date.now() - lastFinishClick > 2000) await clickFinish('still-recording');
       await abortableSleep(250, signal);
       continue;
     }
@@ -684,26 +761,29 @@ async function abortStream(s) {
   release();
 }
 
-// --- read-only health probe (independent of the transcribe mutex/page) ------
+// --- strictly observational health probe (independent of the transcribe mutex/page) ------
 function isBusy() { return _busy; }
 async function probe() {
   let b;
   try {
     b = await chromium.connectOverCDP(CDP, { timeout: 4000 });
-    const page = await normalizeServicePages(b.contexts()[0]);
-    let blocker = await blockingModalState(page);
-    if (blocker) {
-      console.warn(`[wispr-dictate] probe: auto-dismissing ${blockerLabel(blocker)}`);
-      blocker = await dismissBlockingModal(page);
+    const pages = b.contexts()[0]?.pages() || [];
+    const page = pages.find(p => !p.isClosed() && isDictationServicePage(p));
+    if (!page) {
+      return { browser: 'up', dictationService: 'loading' };
     }
+    const blocker = await blockingModalState(page).catch(() => null);
     const st = await page.evaluate(() => {
       const txt = el => (el.innerText || el.textContent || '').trim();
       const loggedOut = [...document.querySelectorAll('button,a,[role="button"]')].some(e => /^log in$|^sign up for free$/i.test(txt(e)));
-      const dict = !!document.querySelector('button[aria-label="Start dictation"],button[aria-label="Submit dictation"],button[aria-label="Transcribing dictation"]');
-      return { loggedOut, dict };
-    });
+      const dict = !!document.querySelector('button[aria-label="Dictate"],button[aria-label="Start dictation"],button[aria-label="Stop dictation"],button[aria-label="Submit dictation"],button[aria-label="Transcribing dictation"]');
+      const composer = !!document.querySelector('[role="textbox"],#prompt-textarea');
+      return { loggedOut, dict, composer };
+    }).catch(() => ({}));
     if (blocker) return { browser: 'up', dictationService: 'blocked', blocker: blockerLabel(blocker) };
-    return { browser: 'up', dictationService: st.loggedOut ? 'logged_out' : (st.dict ? 'ready' : 'loading') };
+    if (st.loggedOut) return { browser: 'up', dictationService: 'logged_out' };
+    const ready = Boolean(st.composer && st.dict);
+    return { browser: 'up', dictationService: ready ? 'ready' : 'loading' };
   } catch (_) {
     return { browser: 'down', dictationService: 'unreachable' };
   } finally { try { await b.close(); } catch (_) {} }
