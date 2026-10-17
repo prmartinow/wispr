@@ -122,6 +122,10 @@ function busyError() { const e = new Error('dictation backend is busy; retry sho
 function acquireNow() { if (_busy) throw busyError(); _busy = true; }
 function tryAcquire() { if (_busy) return false; _busy = true; return true; }
 function release() { _busy = false; }
+const MAIN_PAGE_OWNER = Symbol('main dictation request');
+function ownsDictationPage(owner) {
+  return owner === MAIN_PAGE_OWNER ? _busy : _lanes.includes(owner) && owner.busy;
+}
 
 // --- last-dictation result (surfaced in /healthz as lastDictation) ----------
 let _last = null;
@@ -139,38 +143,148 @@ function normalizeDictationServiceURL(raw) {
   url.hash = '';
   return url.href.endsWith('/') ? url.href : `${url.href}/`;
 }
-const isDictationServicePage = page => page && !page.isClosed() && page.url().startsWith(DICTATION_SERVICE_URL);
+const isDictationServicePage = page => {
+  if (!page || page.isClosed()) return false;
+  try {
+    const target = new URL(DICTATION_SERVICE_URL), current = new URL(page.url());
+    return current.origin === target.origin && (target.pathname === '/' || current.pathname === target.pathname.replace(/\/$/, '') || current.pathname.startsWith(target.pathname));
+  } catch (_) { return false; }
+};
 const isBlankPage = page => {
   if (!page || page.isClosed()) return false;
   const url = page.url();
   return url === 'about:blank' || url === 'chrome://new-tab-page/' || url === 'chrome://newtab/';
 };
 
+async function inspectPagePreservation(page) {
+  try {
+    const state = await dictationUIState(page);
+    return { state, protected: Boolean(state.text || state.active || state.submitted || state.retry || state.providerStopped || state.viewRecording || state.recordingMedia || state.settingsView || state.recordingView || providerChallengeBlocked(page, state)), unknown: false };
+  } catch (_) { return { state: null, protected: true, unknown: true }; }
+}
+
+function attachProviderGuards(page) {
+  if (page._wisprProviderGuardsAttached) return;
+  page._wisprProviderGuardsAttached = true;
+  page.on('response', async response => {
+    try {
+      const target = new URL(response.url());
+      if (target.origin !== new URL(DICTATION_SERVICE_URL).origin) return;
+      const status = response.status();
+      if (status === 403) {
+        const mitigation = await response.headerValue('cf-mitigated');
+        const contentType = await response.headerValue('content-type');
+        if (mitigation === 'challenge' || /text\/html/i.test(contentType || '')) {
+          page._wisprChallengeBlocked = true;
+          page._wisprResolvedHomeDocument = false;
+        }
+      } else if (status >= 200 && status < 300 && target.pathname === '/backend-api/transcribe') {
+        page._wisprChallengeBlocked = false;
+        page._wisprResolvedHomeDocument = false;
+      } else if (page._wisprChallengeBlocked && status >= 200 && status < 300 && target.pathname === new URL(DICTATION_SERVICE_URL).pathname &&
+                 typeof response.request === 'function' && response.request().isNavigationRequest() &&
+                 typeof response.frame === 'function' && typeof page.mainFrame === 'function' && response.frame() === page.mainFrame()) {
+        const contentType = await response.headerValue('content-type');
+        if (/text\/html/i.test(contentType || '')) page._wisprResolvedHomeDocument = true;
+      }
+    } catch (_) {}
+  });
+}
+
+// A human-resolved home document must be observed after the challenge, then confirmed ready.
+function providerChallengeBlocked(page, state) {
+  if (page._wisprChallengeBlocked && page._wisprResolvedHomeDocument && !state.challenge && !state.loggedOut && state.composer && state.start) {
+    page._wisprChallengeBlocked = false;
+    page._wisprResolvedHomeDocument = false;
+  }
+  return Boolean(state.challenge || page._wisprChallengeBlocked);
+}
+
+function watchOwnedServiceTabs(ctx) {
+  if (ctx._wisprTabPolicyInstalled) return;
+  ctx._wisprTabPolicyInstalled = true;
+  let closed = false;
+  const timers = new Map(), handlers = new Map();
+  const cancelTimer = page => {
+    if (timers.has(page)) clearTimeout(timers.get(page));
+    timers.delete(page);
+  };
+  const closeExtra = (page, allowBlank = false) => {
+    if (closed || page.isClosed() || page === ctx._wisprSelectedServicePage) { cancelTimer(page); return; }
+    if (isDictationServicePage(page)) { page._wisprWasServiceTab = true; cancelTimer(page); return; }
+    // A prior service page can contain a draft/recording or be in a same-tab login redirect.
+    if (page._wisprWasServiceTab || /^(?:blob:|data:(?:audio|video)\/)/i.test(page.url())) { cancelTimer(page); return; }
+    if (isBlankPage(page) && !allowBlank) {
+      if (!timers.has(page)) timers.set(page, setTimeout(() => {
+        timers.delete(page);
+        if (!ctx._wisprCreatingSelectedPage) closeExtra(page, true);
+      }, 750));
+      return;
+    }
+    cancelTimer(page);
+    page.close().catch(() => {});
+  };
+  const observe = page => {
+    if (closed || handlers.has(page)) return;
+    const navigated = frame => { if (frame === page.mainFrame()) closeExtra(page); };
+    const pageClosed = () => {
+      cancelTimer(page);
+      page.off('framenavigated', navigated);
+      page.off('close', pageClosed);
+      handlers.delete(page);
+    };
+    handlers.set(page, { navigated, pageClosed });
+    page.on('framenavigated', navigated);
+    page.on('close', pageClosed);
+    closeExtra(page);
+  };
+  ctx.on('page', observe);
+  ctx.on('close', () => {
+    closed = true;
+    ctx.off('page', observe);
+    for (const [page, handler] of handlers) {
+      cancelTimer(page);
+      page.off('framenavigated', handler.navigated);
+      page.off('close', handler.pageClosed);
+    }
+    handlers.clear();
+  });
+  for (const page of ctx.pages()) observe(page);
+}
+
+// These contexts belong only to the dedicated Wispr service profiles.
 async function normalizeServicePages(ctx, preferred = null) {
   let pages = ctx.pages().filter(p => !p.isClosed());
+  const previousSelection = ctx._wisprSelectedServicePage;
+  if (previousSelection && !previousSelection.isClosed() && previousSelection._wisprWasServiceTab && !isDictationServicePage(previousSelection)) {
+    throw makeBackendUnavailable('Selected service tab changed origin; preserving its login or recording view');
+  }
   let servicePages = pages.filter(isDictationServicePage);
-  let page = isDictationServicePage(preferred) ? preferred : servicePages[0];
-
+  const inspected = await Promise.all(servicePages.map(async candidate => ({ candidate, ...await inspectPagePreservation(candidate) })));
+  const protectedPages = inspected.filter(entry => entry.protected);
+  if (protectedPages.length > 1 || (servicePages.length > 1 && inspected.some(entry => entry.unknown))) {
+    throw makeBackendUnavailable('Multiple or uninspectable service tabs may contain recordings or drafts; preserving every tab');
+  }
+  let page = protectedPages[0]?.candidate || (servicePages.includes(preferred) ? preferred : null) || inspected.find(entry => entry.state?.composer && entry.state?.start)?.candidate || servicePages[0];
+  const needsNavigation = !page;
   if (!page) {
-    page = pages.find(isBlankPage) || await ctx.newPage();
-    if (!isDictationServicePage(page)) await page.goto(DICTATION_SERVICE_URL);
+    page = pages.find(isBlankPage);
+    if (!page) {
+      ctx._wisprCreatingSelectedPage = true;
+      try { page = await ctx.newPage(); }
+      finally { ctx._wisprCreatingSelectedPage = false; }
+    }
   }
-
-  servicePages = ctx.pages().filter(isDictationServicePage);
-  const duplicateServicePages = servicePages.filter(p => p !== page);
-  if (duplicateServicePages.length) console.warn(`[wispr-dictate] closing ${duplicateServicePages.length} duplicate dictation service tab(s)`);
-  await Promise.all(duplicateServicePages.map(p => p.close().catch(() => {})));
-
-  const blankPages = ctx.pages().filter(p => p !== page && isBlankPage(p));
-  await Promise.all(blankPages.map(p => p.close().catch(() => {})));
-
-  if (page && !page._wisprDialogAttached) {
-    page._wisprDialogAttached = true;
-    page.on('dialog', dialog => {
-      console.warn(`[wispr-dictate] auto-dismissing unexpected page dialog: ${dialog.type()} "${dialog.message()}"`);
-      dialog.dismiss().catch(() => {});
-    });
-  }
+  // Protect the selected bootstrap tab before its first navigation or any page event.
+  ctx._wisprSelectedServicePage = page;
+  page._wisprWasServiceTab = true;
+  watchOwnedServiceTabs(ctx);
+  attachProviderGuards(page);
+  if (needsNavigation && !isDictationServicePage(page)) await page.goto(DICTATION_SERVICE_URL);
+  pages = ctx.pages().filter(p => !p.isClosed());
+  const extraPages = pages.filter(p => p !== page && !/^(?:blob:|data:(?:audio|video)\/)/i.test(p.url()) && !(p._wisprWasServiceTab && !isDictationServicePage(p)));
+  if (extraPages.length) console.log(`[wispr-dictate] closing ${extraPages.length} extra service-profile tab(s)`);
+  await Promise.all(extraPages.map(p => p.close().catch(() => {})));
   return page;
 }
 
@@ -180,7 +294,8 @@ async function getPage() {
       await _page.evaluate(() => 1);
       _page = await normalizeServicePages(_page.context(), _page);
       return _page;
-    } catch (_) {
+    } catch (error) {
+      if (error.code === 'backend_unavailable') throw error;
       _page = null;
     }
   }
@@ -198,7 +313,10 @@ async function getLanePage(lane) {
       await lane.page.evaluate(() => 1);
       lane.page = await normalizeServicePages(lane.page.context(), lane.page);
       return lane.page;
-    } catch (_) { lane.page = null; }
+    } catch (error) {
+      if (error.code === 'backend_unavailable') throw error;
+      lane.page = null;
+    }
   }
   if (lane.browser) { try { await lane.browser.close(); } catch (_) {} lane.browser = null; }
   lane.browser = await chromium.connectOverCDP(lane.cdp, { timeout: 10000 });
@@ -256,46 +374,131 @@ const dictationUIState = page => page.evaluate(() => {
     const r = el.getBoundingClientRect();
     return r.width > 1 && r.height > 1;
   };
-  const controls = [...document.querySelectorAll('button[aria-label],[role="button"][aria-label]')]
-    .filter(visible)
-    .map(el => ({
-      label: el.getAttribute('aria-label') || '',
-      disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true'
-    }));
-  const hasEnabled = re => controls.some(c => re.test(c.label) && !c.disabled);
-  const hasAny = re => controls.some(c => re.test(c.label));
-  const hasDisabled = re => controls.some(c => re.test(c.label) && c.disabled);
-
+  const label = el => (el.getAttribute('aria-label') || el.innerText || el.textContent || '').trim();
+  const enabled = el => !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+  const controls = [...document.querySelectorAll('button,[role="button"]')].filter(visible);
+  const hasEnabled = re => controls.some(el => re.test(label(el)) && enabled(el));
+  const hasAny = re => controls.some(el => re.test(label(el)));
+  const hasDisabled = re => controls.some(el => re.test(label(el)) && !enabled(el));
+  // A generic Retry in Voice Settings is unrelated. Require a shared, bounded dictation panel.
+  const markers = [...document.querySelectorAll('p,span,div,h1,h2,h3,[role="status"],[role="alert"]')]
+    .filter(el => visible(el) && /^Dictation stopped$/i.test((el.innerText || el.textContent || '').trim()));
+  let providerStopped = false, viewRecording = false, providerRetry = false;
+  for (const marker of markers) {
+    let panel = marker.parentElement;
+    for (let depth = 0; panel && depth < 5 && panel !== document.body && panel !== document.documentElement; depth++, panel = panel.parentElement) {
+      const buttons = [...panel.querySelectorAll('button,[role="button"]')].filter(visible);
+      if (!buttons.some(el => /^View recording$/i.test(label(el)))) continue;
+      providerStopped = true;
+      viewRecording = true;
+      providerRetry ||= buttons.some(el => /^Retry$/i.test(label(el)) && enabled(el));
+      break;
+    }
+  }
   const start = hasEnabled(/^(?:Start dictation|Dictate)$/i);
   const finish = hasEnabled(/^(?:Submit dictation|Stop dictation)$/i);
   const cancel = hasEnabled(/^Cancel dictation$/i);
+  const retry = hasEnabled(/^Retry dictation$/i) || providerRetry;
   const transcribeAndSend = hasEnabled(/^Transcribe and send$/i);
   const transcribing = hasAny(/^Transcribing dictation$/i);
   const cancelDisabled = hasDisabled(/^Cancel dictation$/i);
-
   const composerEl = document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"]') ||
                      document.querySelector('.ProseMirror[role="textbox"][contenteditable="true"]') ||
                      document.querySelector('#prompt-textarea');
   let text = '';
-  if (composerEl) {
-    text = ('value' in composerEl && typeof composerEl.value === 'string')
-      ? composerEl.value.trim()
-      : (composerEl.innerText || composerEl.textContent || '').trim();
-  }
-
+  if (composerEl) text = ('value' in composerEl && typeof composerEl.value === 'string') ? composerEl.value.trim() : (composerEl.innerText || composerEl.textContent || '').trim();
+  const challenge = /^(?:Just a moment|Attention required|Security verification)/i.test(document.title || '') || [...document.querySelectorAll('iframe[src*="challenges.cloudflare.com"],#challenge-form,#challenge-running,#challenge-stage,[data-testid="challenge-stage"]')].some(visible) ||
+    [...document.querySelectorAll('h1,h2,p')].some(el => visible(el) && /^(?:Just a moment\.*|Verify you are human|Verifying you are human|Checking your browser|Performing security verification)$/i.test((el.innerText || el.textContent || '').trim()));
+  const settingsView = typeof location !== 'undefined' && /^\/settings(?:\/|$)/.test(location.pathname);
+  const recordingView = hasAny(/^(?:Retry transcription|Recording actions|Show all recordings)$/i);
   return {
-    text,
-    start,
-    finish,
-    cancel,
-    transcribeAndSend,
-    transcribing,
-    recording: finish && cancel,
-    active: cancel || finish || transcribeAndSend,
-    cancelDisabled,
-    submitted: transcribing || cancelDisabled
+    text, composer: visible(composerEl), start, finish, cancel, retry, providerStopped, viewRecording, settingsView, recordingView,
+    pendingRecording: retry || providerStopped || viewRecording,
+    recordingMedia: [...document.querySelectorAll('audio[src^="blob:"],video[src^="blob:"]')].some(visible),
+    pendingHome: !!document.querySelector('#pending-home-input'), challenge,
+    loggedOut: [...document.querySelectorAll('button,a,[role="button"]')].filter(visible).some(el => /^log in$|^sign up for free$/i.test(label(el))),
+    transcribeAndSend, transcribing, recording: finish && cancel,
+    active: cancel || finish || transcribeAndSend, cancelDisabled, submitted: transcribing || cancelDisabled
   };
 });
+
+function requirePreservedTakeRecovery(state) {
+  if (state.settingsView || state.recordingView) throw makeBackendUnavailable('Voice settings or saved recordings view must return home before dictation; preserving saved recordings');
+  if (state.pendingRecording || state.retry || state.providerStopped || state.viewRecording || state.recordingMedia) {
+    throw makeBackendUnavailable('Stopped or failed dictation is awaiting recovery; preserving the existing recording');
+  }
+}
+
+async function recoverMisloadedPage(page, signal, owner) {
+  throwIfAborted(signal);
+  if (!ownsDictationPage(owner)) throw makeBackendUnavailable('Browser recovery requires ownership of the transcription lane');
+  let state = await dictationUIState(page);
+  requirePreservedTakeRecovery(state);
+  if (providerChallengeBlocked(page, state)) throw makeBackendUnavailable('Provider access challenge requires human completion');
+  if (state.loggedOut) throw makeBackendUnavailable('Dictation service login requires human completion');
+  if (state.text || state.active || state.submitted) throw makeBackendUnavailable('Existing draft or dictation activity prevents browser refresh');
+  if (state.composer && state.start) return;
+  // Exactly one refresh for an idle, misloaded service page, within the request's lane lock.
+  throwIfAborted(signal);
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 });
+  state = await waitForUIState(page, st => st.pendingRecording || st.settingsView || st.recordingView || st.challenge || st.loggedOut || (st.composer && st.start), 10000, signal);
+  requirePreservedTakeRecovery(state);
+  if (providerChallengeBlocked(page, state)) throw makeBackendUnavailable('Provider access challenge requires human completion');
+  if (state.loggedOut) throw makeBackendUnavailable('Dictation service login requires human completion');
+  if (!state.composer || !state.start) throw makeBackendUnavailable('Dictation service did not become ready after one idle refresh');
+}
+
+async function ensureHighestThinkingEffort(page, owner) {
+  if (!ownsDictationPage(owner)) throw makeBackendUnavailable('Thinking effort selection requires ownership of the transcription lane');
+  const state = await dictationUIState(page);
+  requirePreservedTakeRecovery(state);
+  if (state.text || state.active || state.submitted || providerChallengeBlocked(page, state) || state.loggedOut || !state.composer || !state.start) {
+    throw makeBackendUnavailable('Thinking effort can only be configured on an idle, ready dictation page');
+  }
+  const button = page.locator('button[aria-label="Select ChatGPT model"]:visible');
+  if (await button.count() !== 1) return;
+  const normalized = text => String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized(await button.innerText()) === 'Extra High') return;
+  let opened = false;
+  try {
+    if (await button.getAttribute('aria-expanded') !== 'true') await button.click({ timeout: 3000 });
+    opened = true;
+    await sleep(250);
+    const menu = page.locator('[role="menu"]:visible');
+    await menu.waitFor({ state: 'visible', timeout: 3000 });
+    if (await menu.count() !== 1) throw makeBackendUnavailable('Thinking effort menu is missing or ambiguous');
+    const slider = menu.locator('[role="slider"]:visible');
+    if (await slider.count() !== 1) throw makeBackendUnavailable('Verified thinking effort slider is missing or ambiguous');
+    if (!await slider.isEnabled() || await slider.getAttribute('aria-disabled') === 'true') throw makeBackendUnavailable('Verified thinking effort slider is disabled; preserving the selected model');
+    const minimum = await slider.getAttribute('aria-valuemin');
+    const maximum = await slider.getAttribute('aria-valuemax');
+    const currentAttribute = await slider.getAttribute('aria-valuenow');
+    let current = Number(currentAttribute);
+    if (currentAttribute === null || minimum !== '0' || maximum !== '4' || !Number.isInteger(current) || current < 0 || current > 4) {
+      throw makeBackendUnavailable('Thinking effort slider contract changed; preserving the selected model');
+    }
+    // Value 3 is the verified available Extra High level. Value 4 is locked; never use End/max.
+    while (current !== 3) {
+      const expected = current + (current < 3 ? 1 : -1);
+      await slider.press(current < 3 ? 'ArrowRight' : 'ArrowLeft');
+      let observed = current;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        observed = Number(await slider.getAttribute('aria-valuenow'));
+        if (observed === expected) break;
+        await sleep(50);
+      }
+      if (observed !== expected) throw makeBackendUnavailable('Thinking effort slider did not accept the verified bounded step');
+      current = observed;
+    }
+    const items = menu.locator('[role="menuitem"]:visible');
+    let confirmed = false;
+    for (let i = 0; i < await items.count(); i++) confirmed ||= normalized(await items.nth(i).innerText()) === 'Extra High';
+    if (!confirmed) throw makeBackendUnavailable('Thinking effort level 3 did not render the verified Extra High label');
+  } finally {
+    if (opened && await page.locator('[role="menu"]:visible').count().catch(() => 0)) await page.keyboard.press('Escape').catch(() => {});
+  }
+  if (normalized(await button.innerText()) !== 'Extra High') throw makeBackendUnavailable('Thinking effort selection did not persist as Extra High');
+}
 
 async function clickDictationControl(page, kind, timeout = 4000) {
   const re = DICTATION_LABELS[kind];
@@ -386,7 +589,12 @@ async function blockingModalState(page) {
   }, KNOWN_BLOCKING_MODALS);
 }
 
-async function dismissBlockingModal(page) {
+async function dismissBlockingModal(page, owner) {
+  if (!ownsDictationPage(owner)) throw makeBackendUnavailable('Modal recovery requires ownership of the transcription lane');
+  const state = await dictationUIState(page);
+  requirePreservedTakeRecovery(state);
+  if (providerChallengeBlocked(page, state)) throw makeBackendUnavailable('Provider access challenge requires human completion');
+  if (state.text || state.active || state.submitted) throw makeBackendUnavailable('Existing draft or dictation activity prevents modal recovery');
   let before = await blockingModalState(page);
   if (!before) return null;
 
@@ -403,6 +611,11 @@ async function dismissBlockingModal(page) {
   } catch (e) {
     console.warn(`[wispr-dictate] reload recovery failed or timed out: ${e.message}`);
   }
+
+  const afterReload = await dictationUIState(page);
+  requirePreservedTakeRecovery(afterReload);
+  if (providerChallengeBlocked(page, afterReload)) throw makeBackendUnavailable('Provider access challenge requires human completion');
+  if (afterReload.text || afterReload.active || afterReload.submitted) throw makeBackendUnavailable('Existing draft or dictation activity prevents modal recovery');
 
   // Tier 2: Fallback recovery — targeted modal close selectors and keyboard escape
   const closeSelectors = [
@@ -440,11 +653,11 @@ async function dismissBlockingModal(page) {
   return blockingModalState(page);
 }
 
-async function ensureDictationUnblocked(page) {
+async function ensureDictationUnblocked(page, owner) {
   let blocker = await blockingModalState(page);
   if (!blocker) return;
   console.warn(`[wispr-dictate] ${blockerLabel(blocker)} blocks dictation; trying to dismiss`);
-  blocker = await dismissBlockingModal(page);
+  blocker = await dismissBlockingModal(page, owner);
   if (blocker) throw makeBackendUnavailable(`Dictation service is blocked by ${blockerLabel(blocker)}`);
 }
 
@@ -469,11 +682,13 @@ async function clearComposer(page) {
 // self-heal: if a previous run left dictation active (e.g. client abandoned), cancel it, then clear.
 async function resetDictation(page, signal) {
   const st = await dictationUIState(page).catch(() => ({}));
+  requirePreservedTakeRecovery(st);
   if (st.submitted) {
     console.warn('[wispr-dictate] reset: dictation is already transcribing; waiting before next run');
     await waitForUIState(page, s => !s.submitted, 30000, signal).catch(() => null);
   }
   const afterWait = await dictationUIState(page).catch(() => ({}));
+  requirePreservedTakeRecovery(afterWait);
   if (afterWait.recording || afterWait.cancel || afterWait.finish || afterWait.active) {
     console.warn('[wispr-dictate] reset: active dictation controls visible; cancelling before next run');
     const clicked = await clickDictationControl(page, 'cancel', 2000).catch(() => false);
@@ -568,12 +783,14 @@ function stopSourceWarmup(p) {
   if (t.unref) t.unref();
 }
 
-async function startDictation(page, signal) {
+async function startDictation(page, signal, owner) {
   throwIfAborted(signal);
-  await ensureDictationUnblocked(page);
+  await recoverMisloadedPage(page, signal, owner);
+  await ensureDictationUnblocked(page, owner);
+  await ensureHighestThinkingEffort(page, owner);
   await resetDictation(page, signal);
   throwIfAborted(signal);
-  await ensureDictationUnblocked(page);
+  await ensureDictationUnblocked(page, owner);
   try {
     const st = await waitForUIState(page, s => s.start, 5000, signal);
     if (!st.start) throw new Error('Start dictation control not visible');
@@ -600,6 +817,8 @@ async function startDictation(page, signal) {
 }
 async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
   throwIfAborted(signal);
+  const beforeFinish = await dictationUIState(page);
+  requirePreservedTakeRecovery(beforeFinish);
   let submitted = false;
   let lastFinishClick = 0;
   const clickFinish = async (reason) => {
@@ -618,9 +837,11 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
   let text = '';
   let doneSince = 0;
   let emptyWaitLogged = false;
+  let completed = false;
   while (Date.now() < deadline) {
     throwIfAborted(signal);
     const st = await dictationUIState(page);
+    requirePreservedTakeRecovery(st);
     if (!submitted && st.submitted) {
       submitted = true;
       try { hooks.onSubmitted?.(); } catch (_) {}
@@ -646,6 +867,7 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
 
     text = st.text;
     if (text) {
+      completed = true;
       break;
     } else if (st.start) {
       doneSince ||= Date.now();
@@ -653,11 +875,19 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
         console.log(`[wispr-dictate] submitted UI returned to idle with empty text; debouncing ${EMPTY_TRANSCRIPT_SETTLE_MS}ms`);
         emptyWaitLogged = true;
       }
-      if (Date.now() - doneSince >= EMPTY_TRANSCRIPT_SETTLE_MS) break;
+      if (Date.now() - doneSince >= EMPTY_TRANSCRIPT_SETTLE_MS) {
+        completed = true;
+        break;
+      }
     } else {
       doneSince = 0;
     }
     await abortableSleep(st.start ? 100 : 250, signal);
+  }
+  if (!completed) {
+    const error = new Error('Dictation did not finish before the transcription deadline');
+    error.code = 'transcription_timeout';
+    throw error;
   }
   if (!text) {
     const raw = await composerText(page);
@@ -692,7 +922,7 @@ async function transcribeFile(file, audio = {}, options = {}) {
     throwIfAborted(signal);
     page = lane ? await getLanePage(lane) : await getPage();
     console.log(`[wispr-dictate] batch ${laneLabel} start duration=${Math.round(durationMs)}ms`);
-    await startDictation(page, signal);
+    await startDictation(page, signal, lane || MAIN_PAGE_OWNER);
     await playWavFile(file, durationMs, signal, lane ? lane.sink : SINK);
     await abortableSleep(1200, signal);
     const scrapeMs = Math.max(40000, Math.min(180000, Math.round(durationMs * 0.25) + 30000));
@@ -729,7 +959,7 @@ async function startStream() {
   try {
     const page = await getPage();
     sourceWarmup = spawnSourceWarmup(SOURCE);
-    await startDictation(page);
+    await startDictation(page, undefined, MAIN_PAGE_OWNER);
     const pacat = spawnPacat();
     pacat.on('error', () => {});
     return { page, pacat, sourceWarmup, t0: Date.now(), bytesWritten: 0, firstAudioAt: 0 };
@@ -817,6 +1047,16 @@ async function abortStream(s) {
 
 // --- strictly observational health probe (independent of the transcribe mutex/page) ------
 function isBusy() { return _busy; }
+async function servicePageTargetId(page) {
+  let session;
+  try {
+    session = await page.context().newCDPSession(page);
+    const result = await session.send('Target.getTargetInfo');
+    return result.targetInfo?.targetId || null;
+  } catch (_) { return null; }
+  finally { try { if (session) await session.detach(); } catch (_) {} }
+}
+
 async function probe() {
   let b;
   try {
@@ -827,16 +1067,21 @@ async function probe() {
       return { browser: 'up', dictationService: 'loading' };
     }
     const blocker = await blockingModalState(page).catch(() => null);
-    const st = await page.evaluate(() => {
-      const txt = el => (el.innerText || el.textContent || '').trim();
-      const loggedOut = [...document.querySelectorAll('button,a,[role="button"]')].some(e => /^log in$|^sign up for free$/i.test(txt(e)));
-      const dict = !!document.querySelector('button[aria-label="Dictate"],button[aria-label="Start dictation"],button[aria-label="Stop dictation"],button[aria-label="Submit dictation"],button[aria-label="Transcribing dictation"]');
-      const composer = !!document.querySelector('[role="textbox"][aria-label="Ask ChatGPT"][contenteditable="true"],.ProseMirror[role="textbox"][contenteditable="true"],#prompt-textarea');
-      return { loggedOut, dict, composer };
-    }).catch(() => ({}));
+    const st = await dictationUIState(page).catch(() => ({}));
+    let guardedPage = page;
+    if (_page && !_page.isClosed() && (_page._wisprChallengeBlocked || _page._wisprResolvedHomeDocument)) {
+      const [cachedTarget, observedTarget] = await Promise.all([servicePageTargetId(_page), servicePageTargetId(page)]);
+      if (!cachedTarget || cachedTarget !== observedTarget) {
+        return { browser: 'up', dictationService: 'blocked', blocker: 'guarded primary service target could not be verified' };
+      }
+      guardedPage = _page;
+    }
+    if (providerChallengeBlocked(guardedPage, st)) return { browser: 'up', dictationService: 'blocked', blocker: 'provider access challenge requires human completion' };
+    if (st.settingsView || st.recordingView) return { browser: 'up', dictationService: 'blocked', blocker: 'voice settings or saved recordings view needs returning home' };
+    if (st.pendingRecording || st.retry || st.providerStopped || st.viewRecording || st.recordingMedia) return { browser: 'up', dictationService: 'blocked', blocker: 'stopped or failed dictation awaiting recording recovery' };
     if (blocker) return { browser: 'up', dictationService: 'blocked', blocker: blockerLabel(blocker) };
     if (st.loggedOut) return { browser: 'up', dictationService: 'logged_out' };
-    const ready = Boolean(st.composer && st.dict);
+    const ready = Boolean(st.composer && st.start);
     return { browser: 'up', dictationService: ready ? 'ready' : 'loading' };
   } catch (_) {
     return { browser: 'down', dictationService: 'unreachable' };
@@ -845,28 +1090,28 @@ async function probe() {
 
 async function warmupLanes() {
   const tasks = [];
-  const warmLane = async (fn, label) => {
-    const p = await fn();
-    if (p) {
-      const b = await blockingModalState(p).catch(() => null);
-      if (b) await dismissBlockingModal(p).catch(() => null);
+  const warmLane = async (fn, label, owner) => {
+    const acquired = owner === MAIN_PAGE_OWNER ? tryAcquire() : !owner.busy;
+    if (!acquired) return { label, skipped: true };
+    if (owner !== MAIN_PAGE_OWNER) owner.busy = true;
+    try {
+      const page = await fn();
+      if (page) await ensureHighestThinkingEffort(page, owner);
+      return { label, skipped: false };
+    } finally {
+      if (owner === MAIN_PAGE_OWNER) release(); else owner.busy = false;
     }
-    return label;
   };
-  tasks.push(warmLane(getPage, 'main'));
-  for (const lane of _lanes) {
-    tasks.push(warmLane(() => getLanePage(lane), `lane-${lane.id}`));
-  }
+  tasks.push(warmLane(getPage, 'main', MAIN_PAGE_OWNER));
+  for (const lane of _lanes) tasks.push(warmLane(() => getLanePage(lane), `lane-${lane.id}`, lane));
   const results = await Promise.allSettled(tasks);
-  let ok = 0;
-  for (const r of results) {
-    if (r.status === 'fulfilled') {
-      ok++;
-    } else {
-      console.warn(`[wispr-dictate] warmup failed: ${r.reason?.message || r.reason}`);
-    }
+  let ok = 0, skipped = 0;
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      if (result.value.skipped) skipped++; else ok++;
+    } else console.warn(`[wispr-dictate] warmup failed: ${result.reason?.message || result.reason}`);
   }
-  console.log(`[wispr-dictate] pre-warmed ${ok}/${tasks.length} lane(s)`);
+  console.log(`[wispr-dictate] pre-warmed ${ok}/${tasks.length} lane(s); ${skipped} active lane(s) left untouched`);
 }
 
 module.exports = { transcribe, transcribeFile, startStream, pushAudio, stopStream, abortStream, probe, isBusy, batchBusy, lastResult, warmupLanes };
