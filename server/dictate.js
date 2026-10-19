@@ -868,7 +868,7 @@ async function startDictation(page, signal, owner) {
     throw e;
   }
 }
-async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
+async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}, audioDurationMs = 0) {
   throwIfAborted(signal);
   let submitted = false;
   let lastFinishClick = 0;
@@ -880,71 +880,111 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
     }
     return clicked;
   };
-  const clickedInitial = await clickFinish('initial');
-  if (!clickedInitial) {
-    throw makeBackendUnavailable('Safe dictation finish control disappeared before finalization');
-  }
-  const deadline = Date.now() + timeoutMs;
-  let text = '';
-  let doneSince = 0;
-  let emptyWaitLogged = false;
-  let completed = false;
-  while (Date.now() < deadline) {
-    throwIfAborted(signal);
-    const st = await dictationUIState(page);
-    if (!submitted && st.submitted) {
-      submitted = true;
-      try { hooks.onSubmitted?.(); } catch (_) {}
-    }
 
-    if (st.submitted) {
-      doneSince = 0;
-      await abortableSleep(250, signal);
-      continue;
-    }
-
-    if (st.recording || st.finish || st.cancel) {
-      doneSince = 0;
-      if (st.finish && Date.now() - lastFinishClick > 2000) await clickFinish('still-recording');
-      await abortableSleep(250, signal);
-      continue;
-    }
-
-    if (!submitted) {
-      submitted = true;
-      try { hooks.onSubmitted?.(); } catch (_) {}
-    }
-
-    text = st.text;
-    if (text) {
-      completed = true;
-      break;
-    } else if (st.start) {
-      doneSince ||= Date.now();
-      if (!emptyWaitLogged) {
-        console.log(`[wispr-dictate] submitted UI returned to idle with empty text; debouncing ${EMPTY_TRANSCRIPT_SETTLE_MS}ms`);
-        emptyWaitLogged = true;
+  let apiTranscribeDone = false;
+  let apiTranscribeText = null;
+  const onTranscribeResponse = async (resp) => {
+    try {
+      if (resp.url().includes('/backend-api/transcribe') && resp.request().method() === 'POST') {
+        apiTranscribeDone = true;
+        if (resp.status() === 200) {
+          const json = await resp.json().catch(() => null);
+          if (json && typeof json.text === 'string') {
+            apiTranscribeText = json.text.trim();
+            console.log(`[wispr-dictate] captured /backend-api/transcribe API text (${apiTranscribeText.length} chars)`);
+          }
+        }
       }
-      if (Date.now() - doneSince >= EMPTY_TRANSCRIPT_SETTLE_MS) {
+    } catch (_) {}
+  };
+  page.on('response', onTranscribeResponse);
+
+  const dynamicEmptySettleMs = Math.max(
+    EMPTY_TRANSCRIPT_SETTLE_MS,
+    Math.min(25000, Math.round(audioDurationMs * 0.18) + 3500)
+  );
+
+  try {
+    const clickedInitial = await clickFinish('initial');
+    if (!clickedInitial) {
+      throw makeBackendUnavailable('Safe dictation finish control disappeared before finalization');
+    }
+    const deadline = Date.now() + timeoutMs;
+    let text = '';
+    let doneSince = 0;
+    let emptyWaitLogged = false;
+    let completed = false;
+    while (Date.now() < deadline) {
+      throwIfAborted(signal);
+      const st = await dictationUIState(page);
+      if (!submitted && st.submitted) {
+        submitted = true;
+        try { hooks.onSubmitted?.(); } catch (_) {}
+      }
+
+      if (st.submitted) {
+        doneSince = 0;
+        await abortableSleep(250, signal);
+        continue;
+      }
+
+      if (st.recording || st.finish || st.cancel) {
+        doneSince = 0;
+        if (st.finish && Date.now() - lastFinishClick > 2000) await clickFinish('still-recording');
+        await abortableSleep(250, signal);
+        continue;
+      }
+
+      if (!submitted) {
+        submitted = true;
+        try { hooks.onSubmitted?.(); } catch (_) {}
+      }
+
+      text = st.text || apiTranscribeText || '';
+      if (text) {
         completed = true;
         break;
       }
-    } else {
-      doneSince = 0;
+
+      // If OpenAI's transcribe API request is still in-flight, do not cut off wait prematurely
+      if (!apiTranscribeDone && (Date.now() - lastFinishClick < dynamicEmptySettleMs)) {
+        doneSince = 0;
+        await abortableSleep(150, signal);
+        continue;
+      }
+
+      if (st.start) {
+        doneSince ||= Date.now();
+        if (!emptyWaitLogged) {
+          console.log(`[wispr-dictate] submitted UI returned to idle with empty text; debouncing ${dynamicEmptySettleMs}ms (audio=${Math.round(audioDurationMs)}ms)`);
+          emptyWaitLogged = true;
+        }
+        if (Date.now() - doneSince >= (apiTranscribeDone ? 500 : dynamicEmptySettleMs)) {
+          completed = true;
+          break;
+        }
+      } else {
+        doneSince = 0;
+      }
+      await abortableSleep(st.start ? 100 : 250, signal);
     }
-    await abortableSleep(st.start ? 100 : 250, signal);
+    if (!completed) {
+      const error = new Error('Dictation did not finish before the transcription deadline');
+      error.code = 'transcription_timeout';
+      throw error;
+    }
+    if (!text && apiTranscribeText) {
+      text = apiTranscribeText;
+    }
+    if (!text) {
+      const raw = await composerText(page);
+      if (typeof raw === 'string') text = raw;
+    }
+    await clearComposer(page).catch(() => {});
+    return text || '';
+  } finally {
+    page.off('response', onTranscribeResponse);
   }
-  if (!completed) {
-    const error = new Error('Dictation did not finish before the transcription deadline');
-    error.code = 'transcription_timeout';
-    throw error;
-  }
-  if (!text) {
-    const raw = await composerText(page);
-    if (typeof raw === 'string') text = raw;
-  }
-  await clearComposer(page).catch(() => {});
-  return text || '';
 }
 
 // --- batch mode -------------------------------------------------------------
@@ -976,7 +1016,7 @@ async function transcribeFile(file, audio = {}, options = {}) {
     await playWavFile(file, durationMs, signal, lane ? lane.sink : SINK);
     await abortableSleep(1200, signal);
     const scrapeMs = Math.max(40000, Math.min(180000, Math.round(durationMs * 0.25) + 30000));
-    const text = await submitAndScrape(page, scrapeMs, signal);
+    const text = await submitAndScrape(page, scrapeMs, signal, {}, durationMs);
     console.log(`[wispr-dictate] batch ${laneLabel} final text=${text ? text.length : 0} ms=${Date.now() - t0}`);
     recordResult(!!(text && text.length), Date.now() - t0, text ? undefined : 'empty transcript');
     if (lane) {
@@ -1079,9 +1119,10 @@ async function stopStream(s, hooks = {}) {
     // Brief settle so the streaming recognizer finalizes the just-rendered tail before Submit.
     if (STREAM_SUBMIT_SETTLE_MS > 0) await sleep(STREAM_SUBMIT_SETTLE_MS);
     const drainMs = Date.now() - drainStarted;
+    const audioMs = (s.bytesWritten || 0) / BYTES_PER_MS;
     const text = await submitAndScrape(s.page, 40000, undefined, {
       onSubmitted: hooks.onSubmitting
-    });
+    }, audioMs);
     console.log(`[wispr-dictate] stream stop drain=${drainMs}ms mode=${mode} tail=${tailMs}ms silence=${endSilenceMs}ms text=${text ? text.length : 0}`);
     recordResult(!!(text && text.length), Date.now() - s.t0, text ? undefined : 'empty transcript');
     return { text, duration_ms: Date.now() - s.t0 };
