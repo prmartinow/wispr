@@ -171,7 +171,10 @@ function attachProviderGuards(page) {
       const target = new URL(response.url());
       if (target.origin !== new URL(DICTATION_SERVICE_URL).origin) return;
       const status = response.status();
-      if (status === 403) {
+      const isMainNavigation = typeof response.request === 'function' && response.request().isNavigationRequest() &&
+                               typeof response.frame === 'function' && typeof page.mainFrame === 'function' && response.frame() === page.mainFrame();
+      const isCriticalApi = target.pathname === '/backend-api/transcribe';
+      if (status === 403 && (isMainNavigation || isCriticalApi)) {
         const mitigation = await response.headerValue('cf-mitigated');
         const contentType = await response.headerValue('content-type');
         if (mitigation === 'challenge' || /text\/html/i.test(contentType || '')) {
@@ -181,9 +184,7 @@ function attachProviderGuards(page) {
       } else if (status >= 200 && status < 300 && target.pathname === '/backend-api/transcribe') {
         page._wisprChallengeBlocked = false;
         page._wisprResolvedHomeDocument = false;
-      } else if (page._wisprChallengeBlocked && status >= 200 && status < 300 && target.pathname === new URL(DICTATION_SERVICE_URL).pathname &&
-                 typeof response.request === 'function' && response.request().isNavigationRequest() &&
-                 typeof response.frame === 'function' && typeof page.mainFrame === 'function' && response.frame() === page.mainFrame()) {
+      } else if (page._wisprChallengeBlocked && status >= 200 && status < 300 && target.pathname === new URL(DICTATION_SERVICE_URL).pathname && isMainNavigation) {
         const contentType = await response.headerValue('content-type');
         if (/text\/html/i.test(contentType || '')) page._wisprResolvedHomeDocument = true;
       }
@@ -192,7 +193,13 @@ function attachProviderGuards(page) {
 }
 
 // A human-resolved home document must be observed after the challenge, then confirmed ready.
+// If the page is already idle and ready with composer and start dictation controls, it cannot be challenge-blocked.
 function providerChallengeBlocked(page, state) {
+  if (state && state.composer && state.start && !state.challenge) {
+    page._wisprChallengeBlocked = false;
+    page._wisprResolvedHomeDocument = false;
+    return false;
+  }
   if (page._wisprChallengeBlocked && page._wisprResolvedHomeDocument && !state.challenge && !state.loggedOut && state.composer && state.start) {
     page._wisprChallengeBlocked = false;
     page._wisprResolvedHomeDocument = false;
@@ -411,8 +418,11 @@ const dictationUIState = page => page.evaluate(() => {
     [...document.querySelectorAll('h1,h2,p')].some(el => visible(el) && /^(?:Just a moment\.*|Verify you are human|Verifying you are human|Checking your browser|Performing security verification)$/i.test((el.innerText || el.textContent || '').trim()));
   const settingsView = typeof location !== 'undefined' && /^\/settings(?:\/|$)/.test(location.pathname);
   const recordingView = hasAny(/^(?:Retry transcription|Recording actions|Show all recordings)$/i);
+  const accountLoadError = controls.some(el => /^(?:Reload|Try again)$/i.test(label(el))) &&
+    [...document.querySelectorAll('h1,h2,h3,p,div')].some(el => visible(el) && /We couldn[’']t load your account|The browser check couldn[’']t finish/i.test((el.innerText || el.textContent || '').trim()));
   return {
     text, composer: visible(composerEl), start, finish, cancel, retry, providerStopped, viewRecording, settingsView, recordingView,
+    accountLoadError,
     pendingRecording: retry || providerStopped || viewRecording,
     recordingMedia: [...document.querySelectorAll('audio[src^="blob:"],video[src^="blob:"]')].some(visible),
     pendingHome: !!document.querySelector('#pending-home-input'), challenge,
@@ -422,9 +432,29 @@ const dictationUIState = page => page.evaluate(() => {
   };
 });
 
-function requirePreservedTakeRecovery(state) {
+async function dismissStoppedDictationPanel(page) {
+  try {
+    const dismissBtn = page.locator('button[aria-label="Dismiss"], button:has-text("Dismiss")').first();
+    if (await dismissBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      console.log('[wispr-dictate] found stopped dictation panel; clicking Dismiss to recover');
+      await dismissBtn.click().catch(() => {});
+      await sleep(1000);
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+async function requirePreservedTakeRecovery(state, page = null) {
   if (state.settingsView || state.recordingView) throw makeBackendUnavailable('Voice settings or saved recordings view must return home before dictation; preserving saved recordings');
   if (state.pendingRecording || state.retry || state.providerStopped || state.viewRecording || state.recordingMedia) {
+    if (page) {
+      const dismissed = await dismissStoppedDictationPanel(page);
+      if (dismissed) {
+        const after = await dictationUIState(page).catch(() => ({}));
+        if (!after.pendingRecording && !after.retry && !after.providerStopped && !after.viewRecording && !after.recordingMedia) return;
+      }
+    }
     throw makeBackendUnavailable('Stopped or failed dictation is awaiting recovery; preserving the existing recording');
   }
 }
@@ -433,25 +463,47 @@ async function recoverMisloadedPage(page, signal, owner) {
   throwIfAborted(signal);
   if (!ownsDictationPage(owner)) throw makeBackendUnavailable('Browser recovery requires ownership of the transcription lane');
   let state = await dictationUIState(page);
-  requirePreservedTakeRecovery(state);
+  await requirePreservedTakeRecovery(state, page);
   if (providerChallengeBlocked(page, state)) throw makeBackendUnavailable('Provider access challenge requires human completion');
   if (state.loggedOut) throw makeBackendUnavailable('Dictation service login requires human completion');
   if (state.text || state.active || state.submitted) throw makeBackendUnavailable('Existing draft or dictation activity prevents browser refresh');
   if (state.composer && state.start) return;
-  // Exactly one refresh for an idle, misloaded service page, within the request's lane lock.
+
+  // Tier 1: If there is an in-page transient account-load error / browser-check failure, click Try again/Reload
+  try {
+    const retryBtn = page.locator('button:has-text("Try again"), button:has-text("Reload")').first();
+    if (await retryBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
+      console.log('[wispr-dictate] detected transient account load error; clicking in-page recovery button');
+      await retryBtn.click().catch(() => {});
+      await sleep(3500);
+      state = await dictationUIState(page).catch(() => ({}));
+      if (state.composer && state.start) {
+        console.log('[wispr-dictate] in-page retry successfully recovered dictation service');
+        return;
+      }
+    }
+  } catch (_) {}
+
+  // Tier 2: Dedicated page reload with network settlement
   throwIfAborted(signal);
-  await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 });
-  state = await waitForUIState(page, st => st.pendingRecording || st.settingsView || st.recordingView || st.challenge || st.loggedOut || (st.composer && st.start), 10000, signal);
-  requirePreservedTakeRecovery(state);
+  console.log('[wispr-dictate] performing automated page reload recovery for misloaded service page');
+  try {
+    await page.reload({ waitUntil: 'load', timeout: 15000 });
+  } catch (_) {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+  }
+  await sleep(3000);
+  state = await waitForUIState(page, st => st.pendingRecording || st.settingsView || st.recordingView || st.challenge || st.loggedOut || (st.composer && st.start), 12000, signal);
+  await requirePreservedTakeRecovery(state, page);
   if (providerChallengeBlocked(page, state)) throw makeBackendUnavailable('Provider access challenge requires human completion');
   if (state.loggedOut) throw makeBackendUnavailable('Dictation service login requires human completion');
-  if (!state.composer || !state.start) throw makeBackendUnavailable('Dictation service did not become ready after one idle refresh');
+  if (!state.composer || !state.start) throw makeBackendUnavailable('Dictation service did not become ready after automated idle refresh');
 }
 
 async function ensureHighestThinkingEffort(page, owner) {
   if (!ownsDictationPage(owner)) throw makeBackendUnavailable('Thinking effort selection requires ownership of the transcription lane');
   const state = await dictationUIState(page);
-  requirePreservedTakeRecovery(state);
+  await requirePreservedTakeRecovery(state, page);
   if (state.text || state.active || state.submitted || providerChallengeBlocked(page, state) || state.loggedOut || !state.composer || !state.start) {
     throw makeBackendUnavailable('Thinking effort can only be configured on an idle, ready dictation page');
   }
@@ -592,7 +644,7 @@ async function blockingModalState(page) {
 async function dismissBlockingModal(page, owner) {
   if (!ownsDictationPage(owner)) throw makeBackendUnavailable('Modal recovery requires ownership of the transcription lane');
   const state = await dictationUIState(page);
-  requirePreservedTakeRecovery(state);
+  await requirePreservedTakeRecovery(state, page);
   if (providerChallengeBlocked(page, state)) throw makeBackendUnavailable('Provider access challenge requires human completion');
   if (state.text || state.active || state.submitted) throw makeBackendUnavailable('Existing draft or dictation activity prevents modal recovery');
   let before = await blockingModalState(page);
@@ -613,7 +665,7 @@ async function dismissBlockingModal(page, owner) {
   }
 
   const afterReload = await dictationUIState(page);
-  requirePreservedTakeRecovery(afterReload);
+  await requirePreservedTakeRecovery(afterReload, page);
   if (providerChallengeBlocked(page, afterReload)) throw makeBackendUnavailable('Provider access challenge requires human completion');
   if (afterReload.text || afterReload.active || afterReload.submitted) throw makeBackendUnavailable('Existing draft or dictation activity prevents modal recovery');
 
@@ -681,14 +733,15 @@ async function clearComposer(page) {
 
 // self-heal: if a previous run left dictation active (e.g. client abandoned), cancel it, then clear.
 async function resetDictation(page, signal) {
+  await dismissStoppedDictationPanel(page);
   const st = await dictationUIState(page).catch(() => ({}));
-  requirePreservedTakeRecovery(st);
+  await requirePreservedTakeRecovery(st, page);
   if (st.submitted) {
     console.warn('[wispr-dictate] reset: dictation is already transcribing; waiting before next run');
     await waitForUIState(page, s => !s.submitted, 30000, signal).catch(() => null);
   }
   const afterWait = await dictationUIState(page).catch(() => ({}));
-  requirePreservedTakeRecovery(afterWait);
+  await requirePreservedTakeRecovery(afterWait, page);
   if (afterWait.recording || afterWait.cancel || afterWait.finish || afterWait.active) {
     console.warn('[wispr-dictate] reset: active dictation controls visible; cancelling before next run');
     const clicked = await clickDictationControl(page, 'cancel', 2000).catch(() => false);
@@ -817,8 +870,6 @@ async function startDictation(page, signal, owner) {
 }
 async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
   throwIfAborted(signal);
-  const beforeFinish = await dictationUIState(page);
-  requirePreservedTakeRecovery(beforeFinish);
   let submitted = false;
   let lastFinishClick = 0;
   const clickFinish = async (reason) => {
@@ -841,7 +892,6 @@ async function submitAndScrape(page, timeoutMs = 40000, signal, hooks = {}) {
   while (Date.now() < deadline) {
     throwIfAborted(signal);
     const st = await dictationUIState(page);
-    requirePreservedTakeRecovery(st);
     if (!submitted && st.submitted) {
       submitted = true;
       try { hooks.onSubmitted?.(); } catch (_) {}
@@ -1077,6 +1127,7 @@ async function probe() {
       guardedPage = _page;
     }
     if (providerChallengeBlocked(guardedPage, st)) return { browser: 'up', dictationService: 'blocked', blocker: 'provider access challenge requires human completion' };
+    if (st.accountLoadError) return { browser: 'up', dictationService: 'blocked', blocker: 'transient account load error; automated recovery required' };
     if (st.settingsView || st.recordingView) return { browser: 'up', dictationService: 'blocked', blocker: 'voice settings or saved recordings view needs returning home' };
     if (st.pendingRecording || st.retry || st.providerStopped || st.viewRecording || st.recordingMedia) return { browser: 'up', dictationService: 'blocked', blocker: 'stopped or failed dictation awaiting recording recovery' };
     if (blocker) return { browser: 'up', dictationService: 'blocked', blocker: blockerLabel(blocker) };
@@ -1096,7 +1147,11 @@ async function warmupLanes() {
     if (owner !== MAIN_PAGE_OWNER) owner.busy = true;
     try {
       const page = await fn();
-      if (page) await ensureHighestThinkingEffort(page, owner);
+      if (page) {
+        await recoverMisloadedPage(page, null, owner).catch(() => {});
+        await ensureDictationUnblocked(page, owner).catch(() => {});
+        await ensureHighestThinkingEffort(page, owner).catch(() => {});
+      }
       return { label, skipped: false };
     } finally {
       if (owner === MAIN_PAGE_OWNER) release(); else owner.busy = false;
