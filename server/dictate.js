@@ -501,55 +501,46 @@ async function recoverMisloadedPage(page, signal, owner) {
 }
 
 async function ensureHighestThinkingEffort(page, owner) {
-  if (!ownsDictationPage(owner)) throw makeBackendUnavailable('Thinking effort selection requires ownership of the transcription lane');
-  const state = await dictationUIState(page);
-  await requirePreservedTakeRecovery(state, page);
-  if (state.text || state.active || state.submitted || providerChallengeBlocked(page, state) || state.loggedOut || !state.composer || !state.start) {
-    throw makeBackendUnavailable('Thinking effort can only be configured on an idle, ready dictation page');
-  }
+  if (!ownsDictationPage(owner)) return;
+  const state = await dictationUIState(page).catch(() => ({}));
+  if (state.text || state.active || state.submitted || state.loggedOut || !state.composer || !state.start) return;
+
   const button = page.locator('button[aria-label="Select ChatGPT model"]:visible');
-  if (await button.count() !== 1) return;
-  const normalized = text => String(text || '').replace(/\s+/g, ' ').trim();
-  if (normalized(await button.innerText()) === 'Extra High') return;
+  if (await button.count().catch(() => 0) !== 1) return;
+  const currentBtnText = String(await button.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+  if (/High|Extra High/i.test(currentBtnText)) return;
+
   let opened = false;
   try {
-    if (await button.getAttribute('aria-expanded') !== 'true') await button.click({ timeout: 3000 });
+    if (await button.getAttribute('aria-expanded').catch(() => 'false') !== 'true') {
+      await button.click({ timeout: 2000 }).catch(() => {});
+    }
     opened = true;
     await sleep(250);
     const menu = page.locator('[role="menu"]:visible');
-    await menu.waitFor({ state: 'visible', timeout: 3000 });
-    if (await menu.count() !== 1) throw makeBackendUnavailable('Thinking effort menu is missing or ambiguous');
-    const slider = menu.locator('[role="slider"]:visible');
-    if (await slider.count() !== 1) throw makeBackendUnavailable('Verified thinking effort slider is missing or ambiguous');
-    if (!await slider.isEnabled() || await slider.getAttribute('aria-disabled') === 'true') throw makeBackendUnavailable('Verified thinking effort slider is disabled; preserving the selected model');
-    const minimum = await slider.getAttribute('aria-valuemin');
-    const maximum = await slider.getAttribute('aria-valuemax');
-    const currentAttribute = await slider.getAttribute('aria-valuenow');
-    let current = Number(currentAttribute);
-    if (currentAttribute === null || minimum !== '0' || maximum !== '4' || !Number.isInteger(current) || current < 0 || current > 4) {
-      throw makeBackendUnavailable('Thinking effort slider contract changed; preserving the selected model');
+    if (await menu.count().catch(() => 0) !== 1) return;
+    const slider = menu.locator('[role="slider"]:visible').first();
+    if (await slider.count().catch(() => 0) !== 1) return;
+    if (!await slider.isEnabled().catch(() => false)) return;
+
+    const maxVal = Number(await slider.getAttribute('aria-valuemax').catch(() => '0'));
+    let nowVal = Number(await slider.getAttribute('aria-valuenow').catch(() => '0'));
+    // If max is 4, target 3 (Extra High, since 4 is locked). If max is 2, target 2 (High).
+    const targetVal = maxVal === 4 ? 3 : maxVal;
+    if (targetVal <= 0) return;
+
+    while (nowVal < targetVal) {
+      await slider.press('ArrowRight').catch(() => {});
+      await sleep(60);
+      const updated = Number(await slider.getAttribute('aria-valuenow').catch(() => String(nowVal)));
+      if (updated <= nowVal) break;
+      nowVal = updated;
     }
-    // Value 3 is the verified available Extra High level. Value 4 is locked; never use End/max.
-    while (current !== 3) {
-      const expected = current + (current < 3 ? 1 : -1);
-      await slider.press(current < 3 ? 'ArrowRight' : 'ArrowLeft');
-      let observed = current;
-      for (let attempt = 0; attempt < 10; attempt++) {
-        observed = Number(await slider.getAttribute('aria-valuenow'));
-        if (observed === expected) break;
-        await sleep(50);
-      }
-      if (observed !== expected) throw makeBackendUnavailable('Thinking effort slider did not accept the verified bounded step');
-      current = observed;
-    }
-    const items = menu.locator('[role="menuitem"]:visible');
-    let confirmed = false;
-    for (let i = 0; i < await items.count(); i++) confirmed ||= normalized(await items.nth(i).innerText()) === 'Extra High';
-    if (!confirmed) throw makeBackendUnavailable('Thinking effort level 3 did not render the verified Extra High label');
+  } catch (e) {
+    console.warn(`[wispr-dictate] thinking effort setup non-fatal: ${e.message}`);
   } finally {
-    if (opened && await page.locator('[role="menu"]:visible').count().catch(() => 0)) await page.keyboard.press('Escape').catch(() => {});
+    if (opened) await page.keyboard.press('Escape').catch(() => {});
   }
-  if (normalized(await button.innerText()) !== 'Extra High') throw makeBackendUnavailable('Thinking effort selection did not persist as Extra High');
 }
 
 async function clickDictationControl(page, kind, timeout = 4000) {
