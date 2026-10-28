@@ -519,6 +519,20 @@ async function ensureHighestThinkingEffort(page, owner) {
     await sleep(250);
     const menu = page.locator('[role="menu"]:visible');
     if (await menu.count().catch(() => 0) !== 1) return;
+
+    // Ensure GPT-6 is selected if listed as a radio choice
+    const gpt6Radio = menu.locator('[role="menuitemradio"]:has-text("GPT-6")').first();
+    if (await gpt6Radio.count().catch(() => 0)) {
+      const isChecked = await gpt6Radio.getAttribute('aria-checked').catch(() => 'false');
+      if (isChecked !== 'true') {
+        console.log('[wispr-dictate] selecting GPT-6 model radio item');
+        await gpt6Radio.click({ timeout: 1500 }).catch(() => {});
+        await sleep(600);
+        await button.click({ timeout: 2000 }).catch(() => {});
+        await sleep(300);
+      }
+    }
+
     const slider = menu.locator('[role="slider"]:visible').first();
     if (await slider.count().catch(() => 0) !== 1) return;
     if (!await slider.isEnabled().catch(() => false)) return;
